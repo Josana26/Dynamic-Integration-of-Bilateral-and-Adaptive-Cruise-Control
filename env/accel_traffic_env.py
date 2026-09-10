@@ -303,6 +303,32 @@ class AccelTrafficEnv(VecEnv):
         Uses continuous positive rewards for good driving behavior,
         with string stability as the highest priority.
         """
+        # ==========================================
+        # REWARD WEIGHTS & HYPERPARAMETERS
+        # ==========================================
+        # 1. Safety & Collision
+        W_COLLISION_INIT = -90.0      # Extra one-time penalty on collision start (-100 total)
+        W_COLLISION_CONT = -10.0      # Continuous penalty while colliding
+        W_SAFETY_LINEAR  = -10.0      # Linear penalty when closer than safe headway
+        W_SAFETY_DANGER  = -5.0       # Quadratic penalty within danger zone (<5m)
+        DANGER_DISTANCE  = 5.0        # Danger zone distance threshold (meters)
+
+        # 2. Performance & Speed Tracking
+        W_GAP_TRACKING   = 0.3        # Bonus for maintaining sweet-spot headway
+        W_PULL_FORWARD   = -0.3       # Penalty for lagging behind (>1.5x gap)
+        W_SPEED_MATCH    = 0.2        # Reward for cruising at desired speed (v_des)
+
+        # 3. String Stability & Bilateral Awareness (BCC)
+        W_STRING_STAB    = -0.4       # Penalty for amplifying front car acceleration
+        W_BCC_REAR       = -0.15      # Penalty if tailgating rear car is too close
+
+        # 4. Comfort, Jerk & Energy Efficiency
+        W_COMFORT_SCALE  = -2.5       # Overall comfort penalty scale
+        W_JERK_FACTOR    = 10.0       # Quadratic jerk weight inside comfort
+        W_ACTION_DELTA   = -1.5       # Linear action delta penalty (|a_t - a_{t-1}|)
+        W_ENERGY         = -0.15      # Mechanical power proxy penalty (|a * v|)
+        # ==========================================
+
         cars = self.city.cars
         rewards = np.zeros(self.num_rl_cars, dtype=np.float32)
         if not cars: return rewards
@@ -336,18 +362,18 @@ class AccelTrafficEnv(VecEnv):
             if gap_ratio < 1.0:
                 # Too close (safety risk)
                 gap_error = 1.0 - gap_ratio
-                r_safety = -10.0 * gap_error  # Steep linear penalty
-                if front_gap < 5.0:
-                    r_safety -= 5.0 * ((5.0 - front_gap) ** 2)  # Quadratic danger zone penalty
+                r_safety = W_SAFETY_LINEAR * gap_error
+                if front_gap < DANGER_DISTANCE:
+                    r_safety += W_SAFETY_DANGER * ((DANGER_DISTANCE - front_gap) ** 2)
                 r_gap = 0.0
             else:
                 r_safety = 0.0
                 if gap_ratio <= 1.5:
-                    r_gap = 0.3 * (1.5 - gap_ratio) / 0.5  # Peaks at +0.3 when gap_ratio=1.0
+                    r_gap = W_GAP_TRACKING * (1.5 - gap_ratio) / 0.5  # Peaks at +0.3 when gap_ratio=1.0
                 else:
-                    r_gap = -0.3 * min(gap_ratio - 1.5, 10.0)  # Linear pull forward, capped at -3.0
+                    r_gap = W_PULL_FORWARD * min(gap_ratio - 1.5, 10.0)  # Linear pull forward, capped at -3.0
             
-            # === 2. STRING STABILITY (weight: 0.4) ===
+            # === 2. STRING STABILITY ===
             r_string = 0.0
             if front_car:
                 front_accel_mag = abs(front_car.acceleration)
@@ -358,43 +384,42 @@ class AccelTrafficEnv(VecEnv):
                 if front_accel_mag > 0.1 and gap_ratio < 1.5:
                     if my_accel_mag > front_accel_mag:
                         amplification = (my_accel_mag / front_accel_mag) - 1.0
-                        r_string = -0.4 * min(amplification, 3.0)
+                        r_string = W_STRING_STAB * min(amplification, 3.0)
                 elif front_accel_mag <= 0.1:
                     if my_accel_mag > 0.5:
-                        r_string = -0.1 * (my_accel_mag / max_a)
+                        r_string = (W_STRING_STAB / 4.0) * (my_accel_mag / max_a)
             
-            # === 3. SPEED MATCHING (weight: 0.2) ===
+            # === 3. SPEED MATCHING ===
             speed_ratio = abs(car.velocity - v_des) / max(v_des, 1.0)
-            r_speed = 0.2 * (1.0 - min(speed_ratio, 2.0))
+            r_speed = W_SPEED_MATCH * (1.0 - min(speed_ratio, 2.0))
             
             # === 4. COMFORT & SMOOTHNESS (Option 2 Tuned) ===
             delta_a = car.acceleration - self.prev_accel[car_idx]
-            # Normalizing jerk: using delta_a directly instead of (delta_a/dt)^2 to prevent mathematical explosion
-            r_comfort = -2.5 * (car.acceleration ** 2 + 10.0 * delta_a ** 2) / 25.0
-            r_action_delta = -1.5 * abs(car.acceleration - self.prev_accel[car_idx])
+            r_comfort = W_COMFORT_SCALE * (car.acceleration ** 2 + W_JERK_FACTOR * delta_a ** 2) / 25.0
+            r_action_delta = W_ACTION_DELTA * abs(car.acceleration - self.prev_accel[car_idx])
             
-            # === 5. ENERGY CONSUMPTION (weight: 0.15) ===
+            # === 5. ENERGY CONSUMPTION ===
             power_proxy = abs(car.acceleration * car.velocity)
-            r_energy = -0.15 * (power_proxy / max(max_a * v_des, 1.0))
+            r_energy = W_ENERGY * (power_proxy / max(max_a * v_des, 1.0))
             
             # === 6. BCC AWARENESS ===
             r_bcc = 0.0
             if back_gap < desired_gap:
                 back_gap_error = (desired_gap - back_gap) / max(desired_gap, 1.0)
-                r_bcc = -0.15 * back_gap_error ** 2
+                r_bcc = W_BCC_REAR * back_gap_error ** 2
             
             # SAFETY OVERRIDE: If tailgating heavily, disable positive speed/string rewards
             if r_safety < -0.1:
                 r_speed = min(0.0, r_speed)
                 r_string = min(0.0, r_string)
                 
-            # === 7. COLLISION — One-time + small continuous penalty to prevent staying stuck ===
+            # === 7. COLLISION ===
             r_collision = 0.0
             currently_colliding = (front_gap < 0.5 or back_gap < 0.5)
             if currently_colliding:
-                r_collision = -10.0  # Moderate continuous penalty per step of collision
+                r_collision = W_COLLISION_CONT  # Continuous penalty per step of collision
                 if not self.in_collision[obs_idx]:
-                    r_collision -= 90.0  # Extra -90.0 (total -100.0) on collision START
+                    r_collision += W_COLLISION_INIT  # Extra on collision START (total -100)
             self.in_collision[obs_idx] = currently_colliding
                 
             rewards[obs_idx] = r_string + r_gap + r_speed + r_comfort + r_action_delta + r_energy + r_bcc + r_safety + r_collision
