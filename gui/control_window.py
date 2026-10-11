@@ -3,16 +3,24 @@ Control_window.py: Contains the ControlWindow class for managing the traffic sim
 '''
 
 
+import os
+import sys
+
+# Ensure project root is on sys.path when script is executed directly
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import tkinter as tk
 from tkinter import ttk
 import matplotlib.pyplot as plt
 import csv
 from simulation.city import City
 from gui.transportation_painter import TransportationPainter
+from gui.video_recorder import VideoRecorder
 
 class ControlWindow:
     def __init__(self, master):
         self.master = master
+        self.recorder = VideoRecorder()
 
         self.master.configure(bg="#0f172a")
         self.master.minsize(1080, 720)
@@ -50,6 +58,7 @@ class ControlWindow:
 
         self.dt = self.default_values["dt"]
 
+        self.master.protocol("WM_DELETE_WINDOW", self._on_closing)
         self.master.bind("<Configure>", self._handle_resize)
         self._handle_resize()
 
@@ -75,6 +84,12 @@ class ControlWindow:
 
         style.configure("Primary.TButton", background="#486581", foreground="#e2e8f0", borderwidth=0, padding=9)
         style.map("Primary.TButton", background=[("active", "#5e7a96")])
+
+        style.configure("Record.TButton", background="#881337", foreground="#fecdd3", borderwidth=0, padding=8)
+        style.map("Record.TButton", background=[("active", "#9f1239")])
+
+        style.configure("RecordActive.TButton", background="#b91c1c", foreground="#ffffff", borderwidth=0, padding=8)
+        style.map("RecordActive.TButton", background=[("active", "#dc2626")])
 
         style.configure("TCheckbutton", background="#111827", foreground="#cbd5e1")
 
@@ -205,7 +220,22 @@ class ControlWindow:
         self.resume_following_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         self.plot_acc_button = ttk.Button(action_card, text="Plot Vel and Acc Profiles", command=self.plot_vel_acc_profiles)
-        self.plot_acc_button.pack(fill="x", pady=(0, 8))
+        self.plot_acc_button.pack(fill="x", pady=(0, 6))
+
+        self.record_button = ttk.Button(
+            action_card,
+            text="⏺ Record Video",
+            command=self.toggle_recording,
+            style="Record.TButton",
+        )
+        self.record_button.pack(fill="x", pady=(0, 4))
+
+        self.record_status_label = ttk.Label(
+            action_card,
+            text="Ready to record",
+            style="Meta.TLabel",
+        )
+        self.record_status_label.pack(anchor="w", pady=(0, 8))
 
         self.use_velocity_profile = tk.BooleanVar(value=False)
         self.velocity_profile_checkbox = ttk.Checkbutton(
@@ -354,17 +384,17 @@ class ControlWindow:
         # All simulation panels use full visualization width.
         full_width = target_width
 
-        if hasattr(self, "painter_acc"):
-            self.painter_acc.config(width=full_width)
-            self.painter_acc.repaint()
-
-        if hasattr(self, "painter_bcc"):
-            self.painter_bcc.config(width=full_width)
-            self.painter_bcc.repaint()
-
-        if hasattr(self, "painter_accbcc"):
-            self.painter_accbcc.config(width=full_width)
-            self.painter_accbcc.repaint()
+        if hasattr(self, "painters"):
+            for p in self.painters:
+                if p:
+                    p.config(width=full_width)
+                    p.repaint()
+        else:
+            for attr in ("painter_acc", "painter_bcc", "painter_accbcc", "painter_rl"):
+                if hasattr(self, attr):
+                    p = getattr(self, attr)
+                    p.config(width=full_width)
+                    p.repaint()
     
     def load_velocity_profile(self, filename="data/data.csv"):
         self.ego_velocity_profile = []
@@ -592,8 +622,33 @@ class ControlWindow:
         self.metric_value_vel.config(text=f"{avg_velocity_all:05.2f} m/s")
         self.metric_value_stability.config(text=f"{stability_score:05.1f}")
 
+        # Capture video frame if recording is active
+        if hasattr(self, "recorder") and self.recorder.is_recording:
+            target = getattr(self, "root", self.master)
+            self.recorder.capture_frame(target)
+            if self.recorder.frame_count % 10 == 0:
+                self.record_status_label.config(text=f"🔴 Rec: {self.recorder.frame_count} frames")
+
         # Schedule next update for 0.1 seconds later (100 ms)
         self.timer = self.master.after(int(dt*1000), self.update_simulation)
+
+    def toggle_recording(self):
+        if not self.recorder.is_recording:
+            # If simulation hasn't started yet, start it
+            if not hasattr(self, "city_acc") or self.city_acc is None:
+                self.run_simulation()
+
+            fps = max(10, min(60, int(round(1.0 / self.dt)))) if hasattr(self, "dt") and self.dt > 0 else 20
+            target = getattr(self, "root", self.master)
+            path = self.recorder.start_recording(target, fps=fps)
+            if path:
+                self.record_button.config(text="⏹ Stop Recording", style="RecordActive.TButton")
+                self.record_status_label.config(text=f"🔴 Recording: {os.path.basename(path)}")
+        else:
+            path, count = self.recorder.stop_recording()
+            self.record_button.config(text="⏺ Record Video", style="Record.TButton")
+            if path:
+                self.record_status_label.config(text=f"Saved {count} frames ({os.path.basename(path)})")
 
 
     def stop_lead(self):
@@ -608,6 +663,19 @@ class ControlWindow:
 
     def resume_follower(self):
         self.follower_stop = False
+
+    def _on_closing(self):
+        if hasattr(self, "recorder") and self.recorder.is_recording:
+            try:
+                self.recorder.stop_recording()
+            except Exception:
+                pass
+        if self.timer:
+            try:
+                self.master.after_cancel(self.timer)
+            except Exception:
+                pass
+        self.master.destroy()
 
 
 if __name__ == "__main__":

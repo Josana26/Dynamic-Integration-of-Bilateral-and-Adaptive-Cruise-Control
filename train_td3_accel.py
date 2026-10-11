@@ -2,6 +2,7 @@ import gymnasium as gym
 from stable_baselines3 import TD3
 from stable_baselines3.common.noise import OrnsteinUhlenbeckActionNoise
 from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
+from stable_baselines3.common.callbacks import CheckpointCallback
 import numpy as np
 import os
 import sys
@@ -12,7 +13,26 @@ sys.path.append(current_dir)
 
 from env.accel_traffic_env import AccelTrafficEnv
 
+def get_next_run_id(log_dir="./tensorboard_logs", prefix="TD3"):
+    """Auto-detect the next run number based on existing tensorboard log directories."""
+    if not os.path.exists(log_dir):
+        return f"{prefix}_1"
+    existing = []
+    for item in os.listdir(log_dir):
+        if item.startswith(f"{prefix}_"):
+            try:
+                num = int(item.split("_")[1])
+                existing.append(num)
+            except ValueError:
+                pass
+    next_num = max(existing, default=0) + 1
+    return f"{prefix}_{next_num}"
+
 def train():
+    # Detect next run ID (e.g., TD3_28)
+    run_id = get_next_run_id(log_dir=os.path.join(current_dir, "tensorboard_logs"))
+    print(f"--- Launching Training Run: {run_id} ---")
+
     # Instantiate the decentralized VecEnv natively
     env = AccelTrafficEnv()
     # Normalize rewards (not obs, since we do that manually) to stabilize critic training
@@ -43,15 +63,33 @@ def train():
         tensorboard_log="./tensorboard_logs/"
     )
 
-    print("Starting TD3 direct acceleration training (Option 2 tuned rewards)...")
+    # Setup directories for versioned models & intermediate checkpoints
+    models_dir = os.path.join(current_dir, "models")
+    os.makedirs(models_dir, exist_ok=True)
+    checkpoints_dir = os.path.join(models_dir, "checkpoints", run_id)
+    os.makedirs(checkpoints_dir, exist_ok=True)
+
+    # Save periodic checkpoint every 200,000 steps
+    checkpoint_callback = CheckpointCallback(
+        save_freq=200000,
+        save_path=checkpoints_dir,
+        name_prefix=run_id
+    )
+
+    print(f"Starting TD3 direct acceleration training for {run_id} (Option 2 tuned rewards)...")
     # Train the agent
-    model.learn(total_timesteps=1000000, log_interval=100)
+    model.learn(total_timesteps=1000000, log_interval=100, tb_log_name=run_id, callback=checkpoint_callback)
     print("Training finished.")
 
-    # Save the model
-    model_path = os.path.join(current_dir, "td3_accel_agent")
-    model.save(model_path)
-    print(f"Model saved as '{model_path}.zip'")
+    # 1. Save versioned model to models/<run_id>.zip
+    versioned_path = os.path.join(models_dir, run_id)
+    model.save(versioned_path)
+    print(f"Versioned model saved as '{versioned_path}.zip'")
+
+    # 2. Also update default active model td3_accel_agent.zip in root
+    default_path = os.path.join(current_dir, "td3_accel_agent")
+    model.save(default_path)
+    print(f"Default model updated as '{default_path}.zip'")
 
     # Evaluate the trained agent
     print("\nEvaluating model...")

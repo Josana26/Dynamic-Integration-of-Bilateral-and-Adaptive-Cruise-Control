@@ -1,8 +1,13 @@
+import os
+import sys
+
+# Ensure project root is on sys.path when script is executed directly
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import numpy as np
 from stable_baselines3 import TD3
-import os
 import matplotlib.pyplot as plt
 from gui.control_window import ControlWindow
 from simulation.rl_city import RLCity
@@ -11,23 +16,158 @@ class RLControlWindow(ControlWindow):
     def __init__(self, master):
         self.model = None
         self.model_loaded = False
+        self.active_model_path = ""
         super().__init__(master)
-        
-        # Try to load the model
-        model_path = "td3_accel_agent.zip"
-        if os.path.exists(model_path):
-            try:
-                self.model = TD3.load(model_path)
-                self.model_loaded = True
-                print(f"Successfully loaded RL model from {model_path}")
-            except Exception as e:
-                print(f"Error loading RL model: {e}")
+
+    def _configure_style(self):
+        super()._configure_style()
+        style = ttk.Style(self.master)
+        style.configure(
+            "TCombobox",
+            fieldbackground="#0b1220",
+            background="#1e293b",
+            foreground="#e2e8f0",
+            darkcolor="#1e293b",
+            lightcolor="#1e293b",
+            arrowcolor="#cbd5e1",
+            padding=4,
+        )
+        self.master.option_add("*TCombobox*Listbox.background", "#0b1220")
+        self.master.option_add("*TCombobox*Listbox.foreground", "#e2e8f0")
+        self.master.option_add("*TCombobox*Listbox.selectBackground", "#334155")
+        self.master.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+
+    def _build_controls(self):
+        super()._build_controls()
+
+        # RL Model Selection Card
+        model_card = tk.Frame(self.controls_container, bg="#111827", padx=10, pady=10)
+        # Pack right above action card if desired, or at the bottom
+        model_card.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(model_card, text="RL Model Selection", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(model_card, text="Select active policy checkpoint", style="Meta.TLabel").pack(anchor="w", pady=(0, 8))
+
+        self.available_models = self._scan_available_models()
+        default_choice = list(self.available_models.keys())[0] if self.available_models else ""
+        self.selected_model_var = tk.StringVar(value=default_choice)
+
+        selector_row = ttk.Frame(model_card, style="Card.TFrame")
+        selector_row.pack(fill="x", pady=(0, 6))
+        selector_row.columnconfigure(0, weight=1)
+
+        self.model_combobox = ttk.Combobox(
+            selector_row,
+            textvariable=self.selected_model_var,
+            values=list(self.available_models.keys()),
+            state="readonly",
+        )
+        self.model_combobox.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.model_combobox.bind("<<ComboboxSelected>>", self._on_model_dropdown_changed)
+
+        self.browse_model_button = ttk.Button(
+            selector_row,
+            text="Browse...",
+            command=self._browse_model_file,
+        )
+        self.browse_model_button.grid(row=0, column=1, sticky="e")
+
+        self.model_status_label = ttk.Label(
+            model_card,
+            text="Initializing model...",
+            style="Meta.TLabel",
+        )
+        self.model_status_label.pack(anchor="w")
+
+        # Load initial model
+        if default_choice and default_choice in self.available_models:
+            self.load_rl_model(self.available_models[default_choice])
+
+    def _scan_available_models(self):
+        models = {}
+        # 1. Active default model
+        if os.path.exists("td3_accel_agent.zip"):
+            models["Default (td3_accel_agent.zip)"] = os.path.abspath("td3_accel_agent.zip")
+
+        # 2. Versioned models from models/ directory
+        models_dir = os.path.abspath("models")
+        if os.path.exists(models_dir):
+            for root, _, files in os.walk(models_dir):
+                for f in sorted(files):
+                    if f.endswith(".zip"):
+                        full_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(full_path, start=os.getcwd()).replace("\\", "/")
+                        label = f"models/{f}" if root == models_dir else rel_path
+                        models[label] = full_path
+
+        # 3. Any additional root .zip files
+        if os.path.exists("td3_accel_agent_prev.zip") and "models/TD3_19.zip" not in models:
+            models["Previous (td3_accel_agent_prev.zip)"] = os.path.abspath("td3_accel_agent_prev.zip")
+
+        try:
+            for f in sorted(os.listdir(".")):
+                if f.endswith(".zip") and f not in ["td3_accel_agent.zip", "td3_accel_agent_prev.zip"]:
+                    models[f] = os.path.abspath(f)
+        except Exception:
+            pass
+
+        return models
+
+    def _on_model_dropdown_changed(self, _event=None):
+        choice = self.selected_model_var.get()
+        if choice in self.available_models:
+            self.load_rl_model(self.available_models[choice])
+        elif os.path.exists(choice):
+            self.load_rl_model(choice)
+
+    def _browse_model_file(self):
+        filename = filedialog.askopenfilename(
+            title="Select TD3 Model Checkpoint",
+            filetypes=[("Zip Model Files", "*.zip"), ("All Files", "*.*")],
+        )
+        if filename:
+            short_name = os.path.basename(filename)
+            self.available_models[short_name] = filename
+            self.model_combobox["values"] = list(self.available_models.keys())
+            self.selected_model_var.set(short_name)
+            self.load_rl_model(filename)
+
+    def load_rl_model(self, model_path):
+        if not os.path.isabs(model_path):
+            abs_path = os.path.abspath(model_path)
         else:
-            print(f"Warning: RL model '{model_path}' not found. RL simulation will not run.")
-        
+            abs_path = model_path
 
-
-    def _build_visualization_area(self):
+        if os.path.exists(abs_path):
+            try:
+                self.model = TD3.load(abs_path)
+                self.model_loaded = True
+                self.active_model_path = abs_path
+                base_name = os.path.basename(abs_path)
+                print(f"Successfully loaded RL model from {abs_path}")
+                if hasattr(self, "model_status_label"):
+                    self.model_status_label.config(
+                        text=f"✓ Active: {base_name}",
+                        foreground="#4ade80",
+                    )
+            except Exception as e:
+                self.model = None
+                self.model_loaded = False
+                print(f"Error loading RL model: {e}")
+                if hasattr(self, "model_status_label"):
+                    self.model_status_label.config(
+                        text=f"✗ Error: {e}",
+                        foreground="#f87171",
+                    )
+        else:
+            self.model = None
+            self.model_loaded = False
+            print(f"Warning: RL model '{abs_path}' not found.")
+            if hasattr(self, "model_status_label"):
+                self.model_status_label.config(
+                    text=f"⚠ Not found: {os.path.basename(abs_path)}",
+                    foreground="#fbbf24",
+                )
         self.right_content.columnconfigure(0, weight=1)
 
         # Metrics strip
@@ -177,6 +317,13 @@ class RLControlWindow(ControlWindow):
         total_energy_all = total_energy_acc + total_energy_bcc + total_energy_accbcc + total_energy_rl
         self.metric_value_total.config(text=f"{total_energy_all:08.4f} kWh")
         self.metric_value_vel.config(text=f"{get_avg_v(self.city_rl):05.2f} m/s") # Show RL speed as primary
+
+        # Capture video frame if recording is active
+        if hasattr(self, "recorder") and self.recorder.is_recording:
+            target = getattr(self, "root", self.master)
+            self.recorder.capture_frame(target)
+            if self.recorder.frame_count % 10 == 0:
+                self.record_status_label.config(text=f"🔴 Rec: {self.recorder.frame_count} frames")
 
         # Schedule next update
         self.timer = self.master.after(int(dt*1000), self.update_simulation)
