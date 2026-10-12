@@ -50,13 +50,24 @@ class Car:
         return self.pos_history
 
     def update(self, dt):
-        # Invert position update for inverted mapping (move right as forward)
-        # S = ut + 0.5at^2
-        # v = u + at
-        displacement = self.velocity * dt + 0.5 * self.acceleration * dt**2
-        self.pos -= displacement
+        # Physical vehicle kinematics with zero-velocity holding boundary
+        if self.velocity <= 1e-4 and self.acceleration <= 0.0:
+            # Stationary vehicle with brakes applied on level road:
+            # Static friction balances braking force -> zero acceleration, zero motion
+            self.acceleration = 0.0
+            self.velocity = 0.0
+            displacement = 0.0
+        elif self.acceleration < 0.0 and (self.velocity + self.acceleration * dt) <= 0.0:
+            # Stops cleanly within this timestep at t_stop
+            t_stop = self.velocity / (-self.acceleration)
+            displacement = 0.5 * self.velocity * t_stop
+            self.velocity = 0.0
+            self.acceleration = 0.0
+        else:
+            displacement = self.velocity * dt + 0.5 * self.acceleration * dt**2
+            self.velocity += self.acceleration * dt
 
-        self.velocity += self.acceleration * dt
+        self.pos -= displacement
 
 
         road_length = self.current_road.length if hasattr(self, 'current_road') else 1000

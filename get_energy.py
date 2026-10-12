@@ -6,6 +6,7 @@ from simulation.rl_city import RLCity
 from run_headless import load_velocity_profiles
 from stable_baselines3 import TD3
 import numpy as np
+from env.accel_traffic_env import AccelTrafficEnv
 
 params = {
     'car_number': 15, 'kd': 0.9, 'kv': 0.5, 'kc': 0.4,
@@ -37,28 +38,8 @@ city_rl.lead_velocity_profile = [
     (44.0, 25.0), (50.0, 25.0), (53.0, 30.0), (60.0, 30.0)
 ]
 
-def _get_rl_observation(city, v_des=25.0):
-    OBS_MEANS = np.array([20.0, 0.0, 30.0, 0.0, 0.033, 0.0, 25.0], dtype=np.float32)
-    OBS_STDS  = np.array([15.0, 3.0, 30.0, 10.0, 0.02, 10.0, 10.0], dtype=np.float32)
-    road_length = city.roads[0].length
-    obs_array = []
-    for car in city.cars[1:]:
-        cars_same_road = [c for c in city.cars if c.current_road == car.current_road and c != car]
-        def gap_to(other): gap = (car.pos - other.pos) % road_length; return gap if gap > 0 else float('inf')
-        def gap_from(other): gap = (other.pos - car.pos) % road_length; return gap if gap > 0 else float('inf')
-        front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
-        back_car = min(cars_same_road, key=gap_from, default=None) if cars_same_road else None
-        
-        front_gap = (car.pos - front_car.pos - front_car.length) % road_length if front_car else road_length
-        front_rel_vel = front_car.velocity - car.velocity if front_car else 0.0
-        back_gap = (back_car.pos - car.pos - car.length) % road_length if back_car else road_length
-        back_rel_vel = back_car.velocity - car.velocity if back_car else 0.0
-        
-        inverse_back_gap = 1.0 / max(back_gap, 1.0)
-        
-        raw = np.array([car.velocity, car.acceleration, front_gap, front_rel_vel, inverse_back_gap, back_rel_vel, v_des], dtype=np.float32)
-        obs_array.append((raw - OBS_MEANS) / (OBS_STDS + 1e-8))
-    return np.array(obs_array, dtype=np.float32)
+def _get_rl_observation(city, v_des=15.0):
+    return AccelTrafficEnv.get_city_obs(city, v_des)
 
 
 

@@ -11,6 +11,7 @@ from stable_baselines3 import TD3
 import matplotlib.pyplot as plt
 from gui.control_window import ControlWindow
 from simulation.rl_city import RLCity
+from env.accel_traffic_env import AccelTrafficEnv
 
 class RLControlWindow(ControlWindow):
     def __init__(self, master):
@@ -168,6 +169,8 @@ class RLControlWindow(ControlWindow):
                     text=f"⚠ Not found: {os.path.basename(abs_path)}",
                     foreground="#fbbf24",
                 )
+
+    def _build_visualization_area(self):
         self.right_content.columnconfigure(0, weight=1)
 
         # Metrics strip
@@ -189,12 +192,12 @@ class RLControlWindow(ControlWindow):
         self.city_rl = RLCity()  # RL Controlled
 
         # Build visualization cards
-        self.painter_acc, self.energy_label_acc, self.meta_acc = self._build_visualization_card("ACC", self.city_acc, height=180)
-        self.painter_bcc, self.energy_label_bcc, self.meta_bcc = self._build_visualization_card("BCC", self.city_bcc, height=180)
-        self.painter_accbcc, self.energy_label_accbcc, self.meta_accbcc = self._build_visualization_card("ACC+BCC Integration", self.city_accbcc, height=180)
+        self.painter_acc, self.energy_label_acc, self.meta_acc = self._build_visualization_card("ACC", self.city_acc, height=150)
+        self.painter_bcc, self.energy_label_bcc, self.meta_bcc = self._build_visualization_card("BCC", self.city_bcc, height=150)
+        self.painter_accbcc, self.energy_label_accbcc, self.meta_accbcc = self._build_visualization_card("ACC+BCC Integration", self.city_accbcc, height=150)
         
         rl_title = "RL TD3 Agent (Direct Acceleration)"
-        self.painter_rl, self.energy_label_rl, self.meta_rl = self._build_visualization_card(rl_title, self.city_rl, height=180)
+        self.painter_rl, self.energy_label_rl, self.meta_rl = self._build_visualization_card(rl_title, self.city_rl, height=150)
 
         self.painters = [self.painter_acc, self.painter_bcc, self.painter_accbcc, self.painter_rl]
 
@@ -329,54 +332,8 @@ class RLControlWindow(ControlWindow):
         self.timer = self.master.after(int(dt*1000), self.update_simulation)
 
     def _get_rl_observation(self, city):
-        # Features: [ego_vel, ego_accel, front_gap, front_rel_vel, inverse_back_gap, back_rel_vel, v_des]
-        OBS_MEANS = np.array([20.0, 0.0, 30.0, 0.0, 0.033, 0.0, 25.0], dtype=np.float32)
-        OBS_STDS  = np.array([15.0, 3.0, 30.0, 10.0, 0.02, 10.0, 10.0], dtype=np.float32)
-        
-        cars = city.cars
-        road_length = city.roads[0].length if city.roads else 1000
-        v_des = getattr(city, 'v_des', 25.0)
-        obs_array = []
-        
-        # Only observe follower cars (skip index 0 = lead car)
-        for car in cars[1:]:
-            cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car]
-            
-            def gap_to(other):
-                gap = (car.pos - other.pos) % road_length
-                return gap if gap > 0 else float('inf')
-            
-            def gap_from(other):
-                gap = (other.pos - car.pos) % road_length
-                return gap if gap > 0 else float('inf')
-                
-            front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
-            back_car = min(cars_same_road, key=gap_from, default=None) if cars_same_road else None
-            
-            ego_vel = car.velocity
-            ego_accel = car.acceleration
-            
-            if front_car:
-                front_gap = (car.pos - front_car.pos - front_car.length) % road_length
-                front_rel_vel = front_car.velocity - ego_vel
-            else:
-                front_gap = road_length
-                front_rel_vel = 0.0
-                
-            if back_car:
-                back_gap = (back_car.pos - car.pos - car.length) % road_length
-                back_rel_vel = back_car.velocity - ego_vel
-            else:
-                back_gap = road_length
-                back_rel_vel = 0.0
-            
-            inverse_back_gap = 1.0 / max(back_gap, 1.0)
-            
-            raw = np.array([car.velocity, car.acceleration, front_gap, front_rel_vel, inverse_back_gap, back_rel_vel, v_des], dtype=np.float32)
-            normalized = (raw - OBS_MEANS) / (OBS_STDS + 1e-8)
-            obs_array.append(normalized)
-            
-        return np.array(obs_array, dtype=np.float32)
+        v_des = getattr(city, 'v_des', 15.0)
+        return AccelTrafficEnv.get_city_obs(city, v_des)
 
     def plot_vel_acc_profiles(self):
         dt = self.dt

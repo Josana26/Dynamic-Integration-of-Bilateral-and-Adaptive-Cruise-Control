@@ -6,6 +6,7 @@ import pandas as pd
 from simulation.city import City
 from simulation.rl_city import RLCity
 from stable_baselines3 import TD3
+from env.accel_traffic_env import AccelTrafficEnv
 
 def load_velocity_profiles(city_acc, city_bcc, city_accbcc, city_rl):
     """Loads the velocity profiles from data files and assigns them to the cities."""
@@ -157,55 +158,12 @@ def get_gap_statistics(gaps):
     df.index.name = "Statistic"
     print(df.to_string(float_format="%.4f"))
 
-def _get_rl_observation(city, v_des=25.0):
+def _get_rl_observation(city, v_des=15.0):
     """
     Build normalized observations for FOLLOWER cars only (indices 1..N-1).
-    Must exactly match AccelTrafficEnv._get_obs() normalization.
+    Delegates to AccelTrafficEnv.get_city_obs for 100% mathematical consistency.
     """
-    OBS_MEANS = np.array([20.0, 0.0, 30.0, 0.0, 30.0, 0.0, 25.0], dtype=np.float32)
-    OBS_STDS  = np.array([15.0, 3.0, 30.0, 10.0, 30.0, 10.0, 10.0], dtype=np.float32)
-    
-    cars = city.cars
-    road_length = city.roads[0].length if city.roads else 1000
-    obs_array = []
-    
-    # Only observe follower cars (skip index 0 = lead car)
-    for car in cars[1:]:
-        cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car]
-        
-        def gap_to(other):
-            gap = (car.pos - other.pos) % road_length
-            return gap if gap > 0 else float('inf')
-        
-        def gap_from(other):
-            gap = (other.pos - car.pos) % road_length
-            return gap if gap > 0 else float('inf')
-            
-        front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
-        back_car = min(cars_same_road, key=gap_from, default=None) if cars_same_road else None
-        
-        ego_vel = car.velocity
-        ego_accel = car.acceleration
-        
-        if front_car:
-            front_gap = (car.pos - front_car.pos - front_car.length) % road_length
-            front_rel_vel = front_car.velocity - ego_vel
-        else:
-            front_gap = road_length
-            front_rel_vel = 0.0
-            
-        if back_car:
-            back_gap = (back_car.pos - car.pos - car.length) % road_length
-            back_rel_vel = back_car.velocity - ego_vel
-        else:
-            back_gap = road_length
-            back_rel_vel = 0.0
-        
-        raw = np.array([ego_vel, ego_accel, front_gap, front_rel_vel, back_gap, back_rel_vel, v_des], dtype=np.float32)
-        normalized = (raw - OBS_MEANS) / (OBS_STDS + 1e-8)
-        obs_array.append(normalized)
-        
-    return np.array(obs_array, dtype=np.float32)
+    return AccelTrafficEnv.get_city_obs(city, v_des)
 
 def main():
     """Main function to run the simulation without GUI."""

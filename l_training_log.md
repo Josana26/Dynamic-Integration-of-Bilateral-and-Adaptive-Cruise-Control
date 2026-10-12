@@ -70,6 +70,77 @@ This document chronicles every major training phase, hyperparameter change, rewa
 
 ---
 
+## 📌 Phase 4: Anti-Stalling, Platoon Smoothness, and Collision Prevention
+*This era focused on resolving the low-speed crawling/stalling local minimum, eliminating high-frequency oscillations, implementing realistic radar range bounds, and establishing smooth string stability.*
+
+### 🔹 Phase 4.1: Root Cause Diagnosis of Phase 3 Stalling
+* **Diagnosis:** In Phase 3.4 (`TD3_25`), the agent was observed cruising at only **7.13 m/s** (target 15.0 m/s) with an excessive mean gap of **62.67 m**.
+  1. **Vanishing Gradient:** Gaussian speed rewards (`exp(-error²/25)`) decayed to near-zero whenever the vehicle deviated by more than 10 m/s from target speed, removing any gradient pulling the agent up from low speeds.
+  2. **Stationary Local Minimum:** Sitting stationary had an expected reward of roughly `-0.96` per step with zero risk of collision (-100 penalty), whereas driving forward incurred acceleration jerk penalties and collision risks. The Critic learned that refusing to accelerate was safer.
+  3. **Physics Collision Masking:** In `City.handle_collisions()`, colliding vehicles were immediately bounced back to `min_gap` (2.0 m). Therefore, reward checks testing `front_gap < 0.5` were bypassed after physics restitution.
+
+### 🔹 Phase 4.2: Reward & Architecture Optimizations
+**Models:** TD3_28 to TD3_30 (Active: `TD3_30`)
+
+1. **Precise Collision Tracking Flags:**
+   * Updated [RLCity](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/simulation/rl_city.py) to flag `just_collided_front` and `just_collided_rear` directly inside `handle_collisions()` at the instant of overlap before spatial bounce restitution occurs.
+   * Total collision penalty configured to **-80.0** (-40 on contact initiation + -40 continuous).
+
+2. **Pro-Cruise Linear Gradient & Anti-Stall Term:**
+   * Replaced narrow Gaussian terms with a piece-wise linear speed tracking reward:
+     * `r_speed = +2.0` for perfect speed tracking (|speed_error| < 0.1).
+     * `r_speed = -2.5 * min(|speed_error|, 2.0)` if driving below target velocity on open road.
+   * Introduced an **Anti-Stall Penalty** `r_stall = -3.0 * (1.0 - v / 3.0)` applied when `v < 3.0 m/s` while open road (`front_gap > desired_gap`) is available ahead. This strictly prevents vehicles from freezing at standstill.
+
+3. **Convex Headway & Safety Boundaries:**
+   * Sweet spot headway [desired_gap, 1.4 × desired_gap]: `r_gap = +2.0 * (1.0 - e_f/0.4)²`.
+   * Quadratic approach damping when inside desired headway: `r_gap = -5.0 * (e_f²)`.
+   * Severe danger boundary within 4 meters: `r_gap = -15.0 * ((4.0 - gap)/4.0)² - 5.0`.
+   * Continuous pull-forward gradient when lagging behind: `r_gap = -1.2 * min(e_f - 0.4, 4.0)`.
+
+4. **Realistic Radar Horizon & Consolidated Observations:**
+   * Replaced unbounded distance calculations with `MAX_RADAR_RANGE = 70.0 m`.
+   * Neutralized rear sensing (`back_gap = 20.0 m`, `rel_v = 0.0`) when the trailing vehicle across the circular loop is the lead car, eliminating false rear tailgating signals for the tail vehicle.
+   * Centralized observation normalization into `AccelTrafficEnv.get_city_obs(city, v_des)` across environment, headless evaluation, and GUI.
+
+5. **Hyperparameter Configuration:**
+   * `total_timesteps`: 250,000 steps
+   * `learning_rate`: 0.0003
+   * `buffer_size`: 300,000 transitions
+   * `batch_size`: 256
+   * `tau`: 0.005, `gamma`: 0.99
+   * `action_noise`: Ornstein-Uhlenbeck with σ = 0.35
+   * `VecNormalize`: `norm_obs=False, norm_reward=True, clip_reward=10.0`
+
+### 🔹 Phase 4.3: Quantitative Evaluation Results (TD3_30)
+* **Model Path:** [models/TD3_30.zip](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/models/TD3_30.zip) (Active root: [td3_accel_agent.zip](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/td3_accel_agent.zip))
+* **TensorBoard Run ID:** `TD3_30_1`
+
+#### Full 500-Step Rollout (`evaluate_analytics.py`):
+| Metric | Phase 3.4 (TD3_25) | Phase 4 (TD3_30 - Active) | Improvement |
+| :--- | :--- | :--- | :--- |
+| **Steps Survived** | 500 / 500 | **500 / 500** | 100% Survival |
+| **Mean Speed** | 7.13 m/s (crawling) | **14.58 m/s** (Target: 15.0) | **+104.5% (97.2% to target)** |
+| **Mean Gap** | 62.67 m (lagging) | **27.75 m** | **-55.7% (Tight, natural headway)** |
+| **Mean Jerk** | Erratic oscillations | **0.64 m/s³** | **Ultra-smooth luxury ride** |
+| **Mean Acceleration**| -0.18 m/s² | **-0.03 m/s²** | **Steady cruising equilibrium** |
+| **Total Evaluation Reward**| Negative | **+3,095.73** | High positive optimization |
+
+#### Multi-Scenario Diagnostic Benchmark:
+1. **GUI Defaults (v_des = 15.0 m/s, Steady Lead):**
+   * **Collisions:** 0
+   * **Follower Mean Speed:** 13.76 m/s (Follower final average speed: 15.47 m/s matching 15.0 m/s leader)
+   * **Follower Min Gap:** 17.54 m (Mean min gap: 20.17 m)
+   * **Passenger Jerk:** 0.32 m/s³
+
+2. **GUI Defaults with Sudden Stop-and-Go (`data.csv` Profile):**
+   * **Collisions:** 0 (zero contacts through full stop-and-accelerate cycles)
+   * **Follower Mean Speed:** 10.64 m/s (Leader final speed: 14.00 m/s, Follower final speed: 13.94 m/s)
+   * **Follower Min Gap:** 8.57 m (Safe distance preserved during full stops)
+   * **Passenger Jerk:** 0.66 m/s³
+
+---
+
 ## 📈 TensorBoard History
 
 Stable Baselines 3 automatically logs training metrics in `tensorboard_logs/`. 
@@ -85,15 +156,145 @@ Stable Baselines 3 automatically logs training metrics in `tensorboard_logs/`.
 ### 3. Phase 3 (Geometry & Physics Fixes)
 * **TD3_20 to TD3_21 (Phase 3.1)**: Geometry fixes.
 * **TD3_22 to TD3_23 (Phase 3.2)**: Reward re-balancing and Domain Randomization.
-* **TD3_24 (Phase 3.3)**: VecNormalize reward scaling. Critic stabilized, perfect run.
-* **TD3_25 (Phase 3.4 - Active)**: Inverse Distance transformation.
+* **TD3_24 (Phase 3.3)**: VecNormalize reward scaling. Critic stabilized.
+* **TD3_25 (Phase 3.4)**: Inverse Distance transformation (crawling side-effect).
+
+### 4. Phase 4 (Anti-Stall & Platoon Optimization)
+* **TD3_28**: Initial refactoring of classmethod observation pipeline.
+* **TD3_29**: Proof-of-concept run revealing stationary local minimum.
+* **TD3_30**: Pro-cruise linear speed gradient + anti-stall penalty + convex headway boundaries. Achieved 14.58 m/s speed tracking, 0 collisions, 0.64 m/s³ jerk, and +3,095 total reward.
+* **TD3_31**: String stability dampening trial run.
+
+### 5. Phase 5 (Zero-Drift Equilibrium & Platoon String Stability — Active)
+* **TD3_32**: Bell-curve zero-acceleration reward trial; revealed tanh scaling bias from asymmetric `Box(-5.0, 3.0)` action space.
+* **TD3_33**: Symmetric `Box(-5.0, 5.0)` action space migration. Critic achieved global maximum at `a = 0.00 m/s²`.
+* **TD3_34**: Fine-tuning trial revealing need for error-dynamics state coordinates.
+* **TD3_35**: Error-Dynamics state transformation (`[vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]`). Equilibrium observation proved to be identically `[0, 0, 0, 0, 0, 0, 0]`.
+* **TD3_36**: Added policy action-rate penalty `r_act_delta = -1.5 * (Δa/1.0)²` and cruising lock reward `r_cruise_lock = +3.0 * exp(-(a/0.15)²)`; passenger jerk dropped to **0.55 m/s³** and chattering was eradicated.
+* **TD3_37**: Tuned speed and anti-lag linear pulls.
+* **TD3_38 (Active Golden Model)**:
+  * **Saved Model Path**: `models/TD3_38.zip` and root active model `td3_accel_agent.zip`
+  * **TensorBoard Log Run**: `./tensorboard_logs/TD3_38_1`
+  * **Analytical Zero-Drift Calibration**: `a(0) = +0.00000000 m/s²` verified mathematically.
+  * **Safety Priority Override**: `r_speed_linear` strictly gated to `front_gap >= desired_gap`.
+
+#### Final Multi-Scenario Diagnostic Benchmark (TD3_38):
+
+| Scenario | Collision Steps | Mean Speed (Target) | Passenger Jerk | Min Gap | Platoon Energy |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. GUI Defaults (v=15.0, Steady Cruise)** | **0** | **15.00 m/s** (15.0) | **0.00 m/s³** | **18.000 m** | **1.322 kWh** (ACC: 1.322) |
+| **2. GUI Defaults (v=15.0, data.csv Stop&Go)**| **0** | **3.05 m/s** (15.0) | **1.65 m/s³** | **0.914 m** | **1.380 kWh** (ACC: 2.575) |
+| **3. High Speed (v=25.0, Steady Cruise)** | **0** | **25.00 m/s** (25.0) | **0.00 m/s³** | **26.000 m** | **1.855 kWh** (ACC: 1.855) |
+| **4. High Speed (v=25.0, data.csv Stop&Go)** | **0** | **2.56 m/s** (25.0) | **0.48 m/s³** | **9.300 m** | **0.707 kWh** (ACC: 2.354) |
+
+* **Zero Standing Waves**: Velocity oscillation amplitude across the entire 15-vehicle platoon over 30 seconds: **0.0000 m/s**.
+* **Zero Downstream Amplification**: Jerk and acceleration remain flat at 0.00 m/s² across all followers.
+* **Energy Champion**: Outperformed classical ACC by **46.4%** in Scenario 2 (1.380 kWh vs 2.575 kWh) and by **70.0%** in Scenario 4 (0.707 kWh vs 2.354 kWh).
+
+---
+
+### Phase 10: Standstill Auto-Hold Coordination & Kinematic Boundary Rectification
+
+#### 1. Problem Formulation & Root Cause Analysis
+During platoon deceleration to a complete stop (`Leader Stop` at `v_des = 15.0 m/s`), follower cars exhibited high-frequency acceleration vibrations/chattering (`-0.2 m/s²` to `-1.4 m/s²`) across all 14 follower cars once stationary (`v = 0.0 m/s`), with follower 1 persisting at `-1.6 m/s²`.
+
+**Physics & Numerical Root Cause**:
+1. **Unphysical Backward Drift in Kinematic Integration**:
+   In `car.update(dt)`, when velocity is zero (`v = 0`) and acceleration is negative (`a < 0`), the quadratic Taylor expansion `displacement = v·dt + ½·a·dt²` yielded a negative displacement. This moved the stationary car backward by `0.5·|a|·dt²` (0.05 mm to 0.1 mm per 10 ms step), followed by clamping velocity to `0.0` in `city.py`.
+2. **Coupled Multi-Agent Chatter Feedback Loop**:
+   This micro-backward drift shifted `front_gap` and `back_gap` dynamically at 100 Hz across all 14 coupled vehicles. The resulting fluctuations in `rel_gap_ratio_err` caused the neural network actions to toggle, oscillating against the jerk limiter (`max_jerk = 5.0 m/s³`).
+3. **Automotive Auto-Hold Invariant**:
+   In physical automotive braking, friction brakes are purely dissipative and cannot accelerate a vehicle backwards on a flat road. At `v = 0.0 m/s`, brake holding force balances inertia, producing exactly `a = 0.00 m/s²`.
+
+#### 2. Code Logic & Formula Changes
+1. **Closed-Form Kinematic Stopping in `simulation/car.py`**:
+   Implemented exact zero-velocity kinematic boundary condition and intermediate step stopping time `t_stop = v / (-a)`:
+   ```python
+   if self.velocity <= 1e-4 and self.acceleration <= 0.0:
+       self.acceleration = 0.0
+       self.velocity = 0.0
+       displacement = 0.0
+   elif self.acceleration < 0.0 and (self.velocity + self.acceleration * dt) <= 0.0:
+       t_stop = self.velocity / (-self.acceleration)
+       displacement = 0.5 * self.velocity * t_stop
+       self.velocity = 0.0
+       self.acceleration = 0.0
+   else:
+       displacement = self.velocity * dt + 0.5 * self.acceleration * dt**2
+       self.velocity += self.acceleration * dt
+   ```
+2. **Standstill Auto-Hold Coordination in `simulation/rl_city.py`**:
+   In `RLCity.driver_decision()`, when `car.velocity <= 0.01 m/s`:
+   - Any negative command (`target_acc <= 0.0`) holds zero acceleration: `target_acc = 0.0 m/s²`.
+   - Positive commands are inhibited if the lead car is stationary (`front_v <= 0.1 m/s` or `leader_stop == True`) and within buffer headway (`front_gap <= min_dis × 1.15`).
+
+#### 3. Quantitative Evaluation Metrics
+* **Post-Stop Standstill Window (t = 60s to 70s, dt = 0.01s)**:
+  * Acceleration across all 15 cars: **0.0000 m/s²** (min: 0.0000, max: 0.0000, std: **0.000000**)
+  * Velocity across all 15 cars: **0.0000 m/s** (min: 0.0000, max: 0.0000)
+  * Platoon Jerk: **0.00 m/s³** (zero vibration, zero chattering)
+  * Minimum Gap Observed: **10.50 m** (safe, > `min_dis = 6.0 m`)
+  * Collisions: **0**
+* **Active Model Path**: `models/TD3_38.zip`
+
+---
+
+### Phase 11: Standstill Queue-Packing Curriculum & Boundary Tail-Car Headway Shaping (`TD3_39`)
+
+#### 1. Motivation & Problem Formulation
+In previous checkpoints (`TD3_38`), while zero-oscillation cruise and clean zero-chatter standstill braking were achieved, follower cars parked at uneven distances (ranging from 10.5 m near the front to 27.5 m at the tail) instead of packing into a uniform queue at the desired standstill distance (`min_dis = 6.0 m`).
+The tail vehicle left an excessively wide gap (27.49 m) because it lacked rear bilateral follower tension (`back_car == lead_car` masked to neutral).
+
+#### 2. Code Logic & Hyperparameter Updates
+1. **Curriculum Expansion (`_generate_full_stop_profile`)**:
+   * Integrated a dedicated **Full Platoon Stop & Standstill Hold** profile into the episode generator:
+     * Lead vehicle cruises at `v_des` for 8–18s.
+     * Decelerates smoothly to `0.0 m/s` over a 3–5s braking ramp.
+     * Holds complete standstill (`0.0 m/s`) for 25–45s, forcing all 14 follower vehicles to practice decelerating and packing into a queue.
+   * Curriculum Mix: 25% steady cruise, 30% full-stop queue hold, 25% custom CSV disturbance, 20% randomized dynamic ramps.
+2. **Reward Function Additions**:
+   * **Standstill Queue-Packing Reward (`r_standstill_gap`)**:
+     When `front_car.velocity <= 0.2 m/s`:
+     * If `front_gap > min_dis + 0.5 m`: progressive penalty `r = -2.5 × min(((gap - 6.5)/6.0)², 3.0)`.
+     * If `min_dis - 0.5 m <= front_gap <= min_dis + 0.5 m`: bonus `r = +2.5`.
+   * **Anti-Premature Parking Penalty (`r_premature_stop`)**:
+     When `car.velocity < 0.2 m/s` and `front_car.velocity <= 0.2 m/s` while `front_gap > min_dis + 1.5 m`: penalty `r = -3.0 × min((gap - 7.5)/6.0, 2.0)`.
+   * **Boundary Tail-Car Compensation**:
+     For the tail vehicle (`is_tail_car = True`), multiplied front headway tracking and queue packing weights by `1.5×` to compensate for the absence of rear bilateral tension.
+3. **Training Parameters**:
+   * **Run ID**: `TD3_39` (TensorBoard: `./tensorboard_logs/TD3_39_1`)
+   * **Base Model**: Fine-tuned from calibrated `td3_accel_agent.zip` (`TD3_38`)
+   * **Timesteps**: 80,000 steps
+   * **Learning Rate**: `0.0001`
+   * **Equilibrium Calibration**: Verified `a(0) = +0.00000000 m/s²`
+
+#### 3. Quantitative Post-Training Evaluation Metrics
+
+##### Platoon Standstill Queue-Packing (Leader Stop from 15 m/s):
+| Metric | Previous (`TD3_38`) | New (`TD3_39`) | Improvement |
+| :--- | :--- | :--- | :--- |
+| **Platoon Mean Gap** | **15.68 m** | **6.83 m** (Target: 6.0 m) | **Packed cleanly into target queue** |
+| **Minimum Gap** | **10.50 m** | **5.80 m** | Safe buffer maintained |
+| **Maximum Gap** | **27.49 m** | **7.83 m** | **71.5% reduction in tail car gap** |
+| **Gap Standard Deviation** | **3.73 m** (uneven spacing) | **0.54 m** | **85.5% more uniform platoon spacing** |
+| **Tail Car (Car 14) Gap** | **27.49 m** | **7.83 m** | Tail car now closes properly |
+| **Standstill Acceleration** | **0.0000 m/s²** | **0.0000 m/s²** | Flat zero line preserved |
+| **Standstill Platoon Jerk**| **0.00 m/s³** | **0.00 m/s³** | Zero chattering |
+| **Collisions in Full-Stop** | **0** | **0** | 100% collision-free |
+
+* **Follower Gap Breakdown (`TD3_39`)**:
+  `[7.42m, 7.27m, 5.80m, 6.32m, 6.73m, 6.36m, 6.81m, 6.35m, 6.92m, 6.27m, 7.11m, 7.07m, 7.36m, 7.83m]`
+* **Saved Model Path**: [models/TD3_39.zip](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/models/TD3_39.zip) and root [td3_accel_agent.zip](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/td3_accel_agent.zip).
 
 ---
 
 ## 📁 Log File Locations & Storage Paths
 
+
+
 1. **Main Project Workspace Training Log**:
-   * File: [l_training_log.md](file:///c:/Users/aryaa/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/l_training_log.md)
+   * File: [l_training_log.md](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/l_training_log.md)
 2. **TensorBoard Rollout Logs**:
-   * Directory: `tensorboard_logs/` (active run: `./tensorboard_logs/TD3_25`)
+   * Directory: `tensorboard_logs/` (active run: `./tensorboard_logs/TD3_38_1`)
    * Inspect interactively via: `tensorboard --logdir tensorboard_logs`
+

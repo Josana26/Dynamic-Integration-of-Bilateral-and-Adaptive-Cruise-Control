@@ -3,6 +3,7 @@
 This project simulates traffic flow using car-following models, including Adaptive Cruise Control (ACC), Bilateral Cruise Control (BCC), an integrated model of ACC + BCC with dynamic switching, and a Reinforcement Learning (RL) agent trained using TD3. The simulation is visualized using a Tkinter-based GUI and includes advanced features like energy consumption tracking, collision handling, and custom velocity profiles.
 
 ## Project Structure
+
 The codebase is modularized into several logical directories:
 
 - `simulation/`: Contains the core physics engine and simulation loops.
@@ -21,12 +22,14 @@ The codebase is modularized into several logical directories:
 - `run_headless.py`: Runs the simulation without a GUI for evaluation and benchmarking.
 
 ## How It Works
+
 - The simulation creates a number of cars on a circular road.
 - Each car's acceleration is determined by the selected car-following model (ACC, BCC, ACC+BCC, or RL).
 - The GUI allows you to set parameters such as the number of cars, control gains (`kd`, `kv`, `kc`), desired velocity, minimum distance (`min_dis`), minimum gap for collision (`min_gap`), and more.
 - Four separate simulations run simultaneously to compare ACC, BCC, ACC+BCC, and RL models side-by-side.
 
 ## How to Run
+
 1. **Requirements**: Python 3.x. Requires `stable-baselines3`, `gymnasium`, `numpy`, and `matplotlib`.
 2. **Start the Simulation**:
    - Run the RL-enabled control window as a module from the root directory:
@@ -41,7 +44,9 @@ The codebase is modularized into several logical directories:
 ## Key Features
 
 ### 1. Reinforcement Learning (TD3) Integration
+
 The project features a custom-trained Reinforcement Learning agent capable of following traffic smoothly and avoiding collisions.
+
 - **Algorithm**: Twin Delayed Deep Deterministic Policy Gradient (TD3).
 - **Observation Space**: A normalized vector containing Ego Velocity, Ego Acceleration, Front Gap, Front Relative Velocity, Back Gap, Back Relative Velocity, and Desired Velocity.
 - **Action Space**: Direct acceleration prediction bounded between `min_a` and `max_a`.
@@ -59,42 +64,52 @@ The project features a custom-trained Reinforcement Learning agent capable of fo
   - Action Noise: `NormalActionNoise(mean=0.0, sigma=0.1)`
 
 ### 2. Energy Consumption Tracking
+
 - Real-time energy calculation based on inertial force, rolling resistance, and aerodynamic drag.
 - Displays total energy consumption in kWh for direct comparison between all models.
 
 ### 3. Advanced ACC+BCC Integration Factor
+
 The ACC+BCC model dynamically blends behaviors:
+
 - **Back Gap Ratio**: Activates BCC when rear vehicle is within a critical gap.
 - **Front Gap Ratio**: Considers distance to the front vehicle relative to headway threshold.
 - Smoothed with hysteresis to prevent rapid mode switching (ACC, INTEGRATED, or BCC modes).
 
 ### 4. Collision Handling System
+
 - Applies coefficient of restitution for realistic velocity exchange.
 - Visual feedback turns colliding vehicles **orange** for a few seconds.
 
 ### 5. Custom Velocity Profiles
+
 - Load custom velocity-time profiles from CSV files (`data/data.csv` for lead, `data/data2.csv` for follower).
 
 ### 6. Multiple Model Comparison
+
 - Runs independent simulations in parallel to visualize differences between traditional control theory and reinforcement learning.
 
 ## Technical Details
 
 ### Simulation Parameters
+
 - **Time Step (dt)**: Default 0.1 seconds
 - **Road Length**: 1000 meters (circular)
 - **Vehicle Length**: 4 meters
 
 ### Control Gains (For ACC/BCC)
+
 - **kd**: Gap control gain (default: 0.9)
 - **kv**: Relative velocity gain (default: 0.5)
 - **kc**: Desired velocity gain (default: 0.4)
 
 ### Safety Parameters
+
 - **Reaction Time**: Default 0.8 seconds
 - **Max Acceleration**: 3.0 m/s²
 - **Min Acceleration**: -5.0 m/s²
 - **Max Jerk**: ±5.0 m/s³
 
 ---
+
 For any questions or further customization, reach out to me.

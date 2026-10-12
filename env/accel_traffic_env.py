@@ -16,10 +16,11 @@ class AccelTrafficEnv(VecEnv):
     - Simulation parameters are domain-randomized each episode for robustness.
     - Observations are normalized to roughly [-1, 1] for stable learning.
     """
-    # Normalization constants (approximate ranges for each observation feature)
-    # Features: [ego_vel, ego_accel, front_gap, front_rel_vel, inverse_back_gap, back_rel_vel, v_des]
-    OBS_MEANS = np.array([20.0, 0.0, 30.0, 0.0, 0.033, 0.0, 25.0], dtype=np.float32)
-    OBS_STDS  = np.array([15.0, 3.0, 30.0, 10.0, 0.02, 10.0, 10.0], dtype=np.float32)
+    # Normalization constants for Error-State Dynamic Coordinates
+    # Features: [vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err]
+    # At cruise equilibrium (v=v_des, gap=desired_gap, a=0), ALL 7 features are IDENTICALLY 0.0.
+    OBS_MEANS = np.zeros(7, dtype=np.float32)
+    OBS_STDS  = np.array([5.0, 2.0, 10.0, 4.0, 10.0, 4.0, 0.5], dtype=np.float32)
 
     def __init__(self):
         self.city = RLCity()
@@ -28,15 +29,15 @@ class AccelTrafficEnv(VecEnv):
         self.current_step = 0
         self.num_cars = 15
         
-        # Base simulation parameters (will be randomized each episode)
+        # Base simulation parameters (aligned with GUI defaults)
         self.base_params = {
-            'kd': 0.9, 'kv': 0.6, 'kc': 0.4,
-            'v_des': 25.0,
-            'min_dis': 5.5,
-            'reaction_time': 1.0,
-            'max_a': 4.0,
+            'kd': 0.9, 'kv': 0.5, 'kc': 0.4,
+            'v_des': 15.0,
+            'min_dis': 6.0,
+            'reaction_time': 0.8,
+            'max_a': 3.0,
             'min_a': -5.0,
-            'max_v': 50.0,
+            'max_v': 30.0,
             'min_v': 0.0,
         }
         
@@ -51,7 +52,7 @@ class AccelTrafficEnv(VecEnv):
         obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32)
         act_space = spaces.Box(
             low=np.float32(-5.0), 
-            high=np.float32(4.0), 
+            high=np.float32(5.0), 
             shape=(1,), 
             dtype=np.float32
         )
@@ -61,6 +62,8 @@ class AccelTrafficEnv(VecEnv):
         self.num_rl_cars = self.num_cars - 1  # Exclude lead car
         super().__init__(self.num_rl_cars, obs_space, act_space)
         self.prev_accel = np.zeros(self.num_cars)
+        self.prev_action = np.zeros(self.num_rl_cars, dtype=np.float32)
+        self.action_deltas = np.zeros(self.num_rl_cars, dtype=np.float32)
         # Track collision state per car so penalty is one-time, not per-step
         self.in_collision = np.zeros(self.num_rl_cars, dtype=bool)
         
@@ -68,7 +71,8 @@ class AccelTrafficEnv(VecEnv):
         self.custom_profiles = []
         import csv
         import os
-        project_dir = os.path.dirname(os.path.abspath(__file__))
+        env_dir = os.path.dirname(os.path.abspath(__file__))
+        project_dir = os.path.dirname(env_dir)
         csv_files = ["data/data.csv", "data/data1.csv", "data/data2.csv"]
         for csv_file in csv_files:
             csv_path = os.path.join(project_dir, csv_file)
@@ -90,18 +94,18 @@ class AccelTrafficEnv(VecEnv):
         print(f"Total custom profiles loaded: {len(self.custom_profiles)}")
         
     def _randomize_params(self):
-        """Domain randomization: vary parameters each episode."""
+        """Domain randomization: vary parameters around GUI defaults each episode."""
         rng = np.random.default_rng()
         self.sim_params = {
-            'kd': rng.uniform(0.6, 1.2),
-            'kv': rng.uniform(0.3, 0.9),
-            'kc': rng.uniform(0.2, 0.6),
-            'v_des': rng.uniform(10.0, 35.0),
-            'min_dis': rng.uniform(3.0, 8.0),
-            'reaction_time': rng.uniform(0.5, 1.8),
-            'max_a': rng.uniform(2.5, 5.5),
-            'min_a': rng.uniform(-7.0, -3.0),
-            'max_v': 50.0,
+            'kd': rng.uniform(0.7, 1.1),
+            'kv': rng.uniform(0.4, 0.7),
+            'kc': rng.uniform(0.3, 0.5),
+            'v_des': rng.uniform(12.0, 28.0),
+            'min_dis': rng.uniform(5.0, 7.0),
+            'reaction_time': rng.uniform(0.7, 1.0),
+            'max_a': 3.0,
+            'min_a': -5.0,
+            'max_v': 35.0,
             'min_v': 0.0,
         }
     
@@ -146,6 +150,42 @@ class AccelTrafficEnv(VecEnv):
         # Ensure we end at the episode boundary
         profile.append((episode_duration, v))
         return profile
+
+    def _generate_full_stop_profile(self):
+        """
+        Generate a realistic platoon full-stop & standstill queue profile.
+        Lead car cruises at v_des, executes a smooth deceleration ramp to 0.0 m/s,
+        holds at complete standstill (0.0 m/s) for 25-45 seconds to force all
+        follower vehicles to decelerate smoothly and pack cleanly at min_dis.
+        """
+        rng = np.random.default_rng()
+        v_init = self.sim_params['v_des']
+        episode_duration = self.max_steps * self.dt  # 100 seconds
+        
+        # 1. Initial cruise phase: 8 - 18 seconds
+        t_cruise = rng.uniform(8.0, 18.0)
+        profile = [(0.0, v_init), (t_cruise, v_init)]
+        
+        # 2. Smooth braking deceleration ramp down to 0.0 m/s over 3.0 - 5.0 seconds
+        t_brake = rng.uniform(3.0, 5.0)
+        profile.append((t_cruise + t_brake, 0.0))
+        
+        # 3. Standstill hold duration: 25 - 45 seconds at 0.0 m/s
+        t_hold = rng.uniform(25.0, 45.0)
+        t_stopped_until = min(episode_duration, t_cruise + t_brake + t_hold)
+        profile.append((t_stopped_until, 0.0))
+        
+        # 4. In 40% of cases, resume back up to speed to test stop-and-go launch;
+        # in 60% remain at complete standstill until episode end.
+        if t_stopped_until < episode_duration and rng.random() < 0.4:
+            t_accel = rng.uniform(4.0, 6.0)
+            v_resume = rng.uniform(10.0, v_init)
+            profile.append((t_stopped_until + t_accel, v_resume))
+            profile.append((episode_duration, v_resume))
+        else:
+            profile.append((episode_duration, 0.0))
+            
+        return profile
     
     def _apply_lead_profile(self):
         """Apply the velocity profile to the lead car via the city's built-in mechanism."""
@@ -157,13 +197,23 @@ class AccelTrafficEnv(VecEnv):
         # Randomize parameters for this episode
         self._randomize_params()
         
-        # Mix training: 40% chance to train on a custom CSV profile (randomly chosen),
-        # 60% chance to train on randomized profiles for generalization.
+        # Mix training profiles:
+        # 25% pure steady-state cruise (trains zero-oscillation flat-line tracking at v_des)
+        # 30% full-stop and queue hold (trains uniform deceleration and standstill packing at min_dis)
+        # 25% custom CSV profiles (data.csv stop-and-go disturbance)
+        # 20% randomized dynamic profiles (speed changes, braking, ramps)
         rng = np.random.default_rng()
-        if self.custom_profiles and rng.random() < 0.4:
+        prob = rng.random()
+        if prob < 0.25:
+            self.lead_profile = [
+                (0.0, self.sim_params['v_des']),
+                (self.max_steps * self.dt, self.sim_params['v_des'])
+            ]
+        elif prob < 0.55:
+            self.lead_profile = self._generate_full_stop_profile()
+        elif prob < 0.80 and self.custom_profiles:
             idx = rng.integers(0, len(self.custom_profiles))
             self.lead_profile = self.custom_profiles[idx]
-            # When training on custom data, align v_des to the profile's max velocity
             max_v_in_profile = max(v for _, v in self.lead_profile)
             self.sim_params['v_des'] = max(max_v_in_profile, 5.0)
         else:
@@ -199,6 +249,8 @@ class AccelTrafficEnv(VecEnv):
         self._apply_lead_profile()
             
         self.prev_accel = np.zeros(self.num_cars)
+        self.prev_action = np.zeros(self.num_rl_cars, dtype=np.float32)
+        self.action_deltas = np.zeros(self.num_rl_cars, dtype=np.float32)
         self.in_collision = np.zeros(self.num_rl_cars, dtype=bool)
         return self._get_obs()
 
@@ -209,6 +261,10 @@ class AccelTrafficEnv(VecEnv):
         self.current_step += 1
         
         acts = np.array(self.actions).flatten()
+        
+        # Track action rate of change (delta) to heavily penalize chattering
+        self.action_deltas = np.abs(acts[:self.num_rl_cars] - self.prev_action)
+        self.prev_action = acts[:self.num_rl_cars].copy()
         
         # Save previous accelerations for jerk calculation in rewards
         self.prev_accel = np.array([c.acceleration for c in self.city.cars]) if self.city.cars else np.zeros(self.num_cars)
@@ -242,29 +298,30 @@ class AccelTrafficEnv(VecEnv):
             
         return obs, rewards, dones, infos
 
-    def _get_obs(self):
+    @classmethod
+    def get_city_obs(cls, city, v_des=15.0):
         """
         Build normalized observations for FOLLOWER cars only (indices 1..N-1).
-        Each car gets: [ego_vel, ego_accel, front_gap, front_rel_vel, back_gap, back_rel_vel, v_des]
-        All values are normalized to roughly [-1, 1].
+        Used by environment, GUI, and headless evaluation for 100% mathematical consistency.
+        Features: [ego_vel, ego_accel, front_gap, front_rel_vel, back_gap, back_rel_vel, v_des]
         """
-        cars = self.city.cars
-        if not cars:
-            return np.zeros((self.num_rl_cars, 7), dtype=np.float32)
+        cars = city.cars
+        if not cars or len(cars) <= 1:
+            return np.zeros((0, 7), dtype=np.float32)
             
-        road_length = self.city.roads[0].length if self.city.roads else 1000
-        obs_array = np.zeros((self.num_rl_cars, 7), dtype=np.float32)
+        road_length = city.roads[0].length if city.roads else 1000
+        num_followers = len(cars) - 1
+        obs_array = np.zeros((num_followers, 7), dtype=np.float32)
+        lead_car = cars[0]
+        MAX_RADAR_RANGE = 70.0  # Max realistic radar sensing range in meters
         
-        v_des = self.sim_params['v_des']
-        
-        # Only observe follower cars (skip index 0 = lead car)
         for obs_idx, car in enumerate(cars[1:]):
             cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car]
             
             def gap_to(other):
                 gap = (car.pos - other.pos) % road_length
                 return gap if gap > 0 else float('inf')
-            
+                
             def gap_from(other):
                 gap = (other.pos - car.pos) % road_length
                 return gap if gap > 0 else float('inf')
@@ -275,60 +332,53 @@ class AccelTrafficEnv(VecEnv):
             ego_vel = car.velocity
             ego_accel = car.acceleration
             
+            min_dis = getattr(city, 'min_dis', 6.0)
+            reaction_time = getattr(city, 'reaction_time', 0.8)
+            desired_gap = min_dis + ego_vel * reaction_time
+
             if front_car:
                 front_gap = (car.pos - front_car.pos - front_car.length) % road_length
                 front_rel_vel = front_car.velocity - ego_vel
             else:
-                front_gap = road_length
+                front_gap = MAX_RADAR_RANGE
                 front_rel_vel = 0.0
-                
-            if back_car:
-                back_gap = (back_car.pos - car.pos - car.length) % road_length
-                back_rel_vel = back_car.velocity - ego_vel
+            front_gap = min(front_gap, MAX_RADAR_RANGE)
+            
+            front_gap_err = front_gap - desired_gap
+            rel_gap_ratio_err = (front_gap - desired_gap) / max(desired_gap, 1.0)
+            
+            # Bilateral Rear Car Sensing:
+            desired_back_gap = min_dis + (back_car.velocity if back_car else ego_vel) * reaction_time
+            if back_car and back_car != lead_car:
+                back_gap_raw = (back_car.pos - car.pos - car.length) % road_length
+                if back_gap_raw <= MAX_RADAR_RANGE:
+                    back_gap = back_gap_raw
+                    back_rel_vel = back_car.velocity - ego_vel
+                else:
+                    back_gap = desired_back_gap
+                    back_rel_vel = 0.0
             else:
-                back_gap = road_length
+                back_gap = desired_back_gap
                 back_rel_vel = 0.0
                 
-            inverse_back_gap = 1.0 / max(back_gap, 1.0)
-            
-            raw = np.array([ego_vel, ego_accel, front_gap, front_rel_vel, inverse_back_gap, back_rel_vel, v_des], dtype=np.float32)
-            # Normalize
-            obs_array[obs_idx] = (raw - self.OBS_MEANS) / (self.OBS_STDS + 1e-8)
+            back_gap_err = back_gap - desired_back_gap
+            vel_err = ego_vel - v_des
+                
+            raw = np.array([vel_err, ego_accel, front_gap_err, front_rel_vel, back_gap_err, back_rel_vel, rel_gap_ratio_err], dtype=np.float32)
+            obs_array[obs_idx] = (raw - cls.OBS_MEANS) / (cls.OBS_STDS + 1e-8)
             
         return obs_array
 
+    def _get_obs(self):
+        """Build normalized observations using canonical get_city_obs."""
+        return self.get_city_obs(self.city, self.sim_params['v_des'])
+
     def _calculate_rewards(self):
         """
-        Reward function for follower cars (indices 1..N-1).
-        Uses continuous positive rewards for good driving behavior,
-        with string stability as the highest priority.
+        Smooth, physically-convex reward function for follower cars (indices 1..N-1).
+        Prioritizes collision avoidance, sweet-spot headway tracking, string stability,
+        bilateral awareness, and comfort without erratic cliff-edges.
         """
-        # ==========================================
-        # REWARD WEIGHTS & HYPERPARAMETERS
-        # ==========================================
-        # 1. Safety & Collision
-        W_COLLISION_INIT = -90.0      # Extra one-time penalty on collision start (-100 total)
-        W_COLLISION_CONT = -10.0      # Continuous penalty while colliding
-        W_SAFETY_LINEAR  = -10.0      # Linear penalty when closer than safe headway
-        W_SAFETY_DANGER  = -5.0       # Quadratic penalty within danger zone (<5m)
-        DANGER_DISTANCE  = 5.0        # Danger zone distance threshold (meters)
-
-        # 2. Performance & Speed Tracking
-        W_GAP_TRACKING   = 0.3        # Bonus for maintaining sweet-spot headway
-        W_PULL_FORWARD   = -0.3       # Penalty for lagging behind (>1.5x gap)
-        W_SPEED_MATCH    = 0.2        # Reward for cruising at desired speed (v_des)
-
-        # 3. String Stability & Bilateral Awareness (BCC)
-        W_STRING_STAB    = -0.4       # Penalty for amplifying front car acceleration
-        W_BCC_REAR       = -0.15      # Penalty if tailgating rear car is too close
-
-        # 4. Comfort, Jerk & Energy Efficiency
-        W_COMFORT_SCALE  = -2.5       # Overall comfort penalty scale
-        W_JERK_FACTOR    = 10.0       # Quadratic jerk weight inside comfort
-        W_ACTION_DELTA   = -1.5       # Linear action delta penalty (|a_t - a_{t-1}|)
-        W_ENERGY         = -0.15      # Mechanical power proxy penalty (|a * v|)
-        # ==========================================
-
         cars = self.city.cars
         rewards = np.zeros(self.num_rl_cars, dtype=np.float32)
         if not cars: return rewards
@@ -336,10 +386,13 @@ class AccelTrafficEnv(VecEnv):
         road_length = self.city.roads[0].length if self.city.roads else 1000
         v_des = self.sim_params['v_des']
         max_a = self.sim_params['max_a']
+        min_dis = self.sim_params['min_dis']
+        reaction_time = self.sim_params['reaction_time']
+        lead_car = cars[0]
+        MAX_RADAR_RANGE = 70.0
         
         for obs_idx, car in enumerate(cars[1:]):
             car_idx = obs_idx + 1  # Actual index in self.city.cars
-            
             cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car]
             
             def gap_to(other):
@@ -353,90 +406,144 @@ class AccelTrafficEnv(VecEnv):
             back_car = min(cars_same_road, key=gap_from, default=None) if cars_same_road else None
             
             front_gap = (car.pos - front_car.pos - front_car.length) % road_length if front_car else road_length
-            back_gap = (back_car.pos - car.pos - car.length) % road_length if back_car else road_length
             
-            desired_gap = self.sim_params['min_dis'] + car.velocity * self.sim_params['reaction_time']
+            desired_gap = min_dis + car.velocity * reaction_time
             
-            # === 1. GAP TRACKING & SAFETY ===
-            gap_ratio = front_gap / max(desired_gap, 1.0)
-            if gap_ratio < 1.0:
-                # Too close (safety risk)
-                gap_error = 1.0 - gap_ratio
-                r_safety = W_SAFETY_LINEAR * gap_error
-                if front_gap < DANGER_DISTANCE:
-                    r_safety += W_SAFETY_DANGER * ((DANGER_DISTANCE - front_gap) ** 2)
-                r_gap = 0.0
-            else:
-                r_safety = 0.0
-                if gap_ratio <= 1.5:
-                    r_gap = W_GAP_TRACKING * (1.5 - gap_ratio) / 0.5  # Peaks at +0.3 when gap_ratio=1.0
-                else:
-                    r_gap = W_PULL_FORWARD * min(gap_ratio - 1.5, 10.0)  # Linear pull forward, capped at -3.0
+            # === 1. COLLISION ===
+            has_collided = (
+                getattr(car, 'just_collided_front', False)
+                or getattr(car, 'just_collided', False)
+                or (getattr(car, 'collision_timer', 0) == 40)
+                or (front_gap < 0.5)
+            )
+            r_collision = 0.0
+            if has_collided:
+                r_collision = -40.0
+                if not self.in_collision[obs_idx]:
+                    r_collision -= 40.0  # -80 total on collision start
+            self.in_collision[obs_idx] = has_collided
             
-            # === 2. STRING STABILITY ===
+            # === 2. SAFE HEADWAY TRACKING (Smooth Gaussian Peak at e_f = 0, No Cliff Edge) ===
+            e_f = (front_gap - desired_gap) / max(desired_gap, 1.0)
+            r_headway = 2.5 * np.exp(- (e_f / 0.25) ** 2)
+            
+            # Safety boundary: emergency braking penalty only when encroaching critical safety buffer
+            r_danger = 0.0
+            if front_gap < 5.0:
+                r_danger = -10.0 * (((5.0 - max(front_gap, 0.0)) / 5.0) ** 2)
+            elif front_gap < 0.6 * desired_gap:
+                r_danger = -3.0 * (((0.6 * desired_gap - front_gap) / (0.6 * desired_gap)) ** 2)
+                
+            # === 3. RELATIVE VELOCITY & STRING STABILITY (Smooth Damping) ===
+            v_rel_f = (front_car.velocity - car.velocity) if front_car else 0.0
+            r_v_match = 1.5 * np.exp(- (v_rel_f / 2.0) ** 2)
+            
+            # Asymmetric damping: if closing in fast on front vehicle (v_rel_f < -1.0)
+            r_closing_damp = 0.0
+            if v_rel_f < -1.0 and front_gap < 1.5 * desired_gap:
+                r_closing_damp = -2.0 * min(((-v_rel_f - 1.0) / 3.0) ** 2, 3.0)
+                
+            # String Stability: penalize downstream acceleration/deceleration amplification
             r_string = 0.0
             if front_car:
-                front_accel_mag = abs(front_car.acceleration)
-                my_accel_mag = abs(car.acceleration)
+                if front_car.acceleration < -0.2 and car.acceleration < front_car.acceleration:
+                    # Over-braking relative to lead vehicle (amplifying deceleration wave)
+                    r_string -= 2.0 * min((front_car.acceleration - car.acceleration) / 2.0, 2.0)
+                elif front_car.acceleration > 0.2 and car.acceleration > front_car.acceleration:
+                    # Over-accelerating relative to lead vehicle (amplifying acceleration wave)
+                    r_string -= 1.0 * min((car.acceleration - front_car.acceleration) / 2.0, 2.0)
                 
-                # Only penalize amplification if we are close enough that it matters (gap_ratio < 1.5)
-                # If we are falling behind, we *must* amplify acceleration to catch up!
-                if front_accel_mag > 0.1 and gap_ratio < 1.5:
-                    if my_accel_mag > front_accel_mag:
-                        amplification = (my_accel_mag / front_accel_mag) - 1.0
-                        r_string = W_STRING_STAB * min(amplification, 3.0)
-                elif front_accel_mag <= 0.1:
-                    if my_accel_mag > 0.5:
-                        r_string = (W_STRING_STAB / 4.0) * (my_accel_mag / max_a)
+            # === 4. SPEED TRACKING & EQUILIBRIUM PROGRESS ===
+            if front_car and front_car.velocity < v_des and front_gap < 2.5 * desired_gap:
+                target_v = front_car.velocity
+            else:
+                target_v = v_des
+                
+            v_err = (car.velocity - target_v) / max(target_v, 1.0)
+            r_speed = 2.0 * np.exp(- (v_err / 0.15) ** 2)
             
-            # === 3. SPEED MATCHING ===
-            speed_ratio = abs(car.velocity - v_des) / max(v_des, 1.0)
-            r_speed = W_SPEED_MATCH * (1.0 - min(speed_ratio, 2.0))
+            # Linear speed tracking penalty: active only when open road ahead (front_gap >= desired_gap)
+            # Never penalize a vehicle for slowing down to avoid a lead vehicle!
+            r_speed_linear = 0.0
+            if front_gap >= desired_gap:
+                r_speed_linear = -1.5 * abs(v_err)
             
-            # === 4. COMFORT & SMOOTHNESS (Option 2 Tuned) ===
-            delta_a = car.acceleration - self.prev_accel[car_idx]
-            r_comfort = W_COMFORT_SCALE * (car.acceleration ** 2 + W_JERK_FACTOR * delta_a ** 2) / 25.0
-            r_action_delta = W_ACTION_DELTA * abs(car.acceleration - self.prev_accel[car_idx])
+            # Anti-lag penalty: prevents lazy falling back when open road ahead
+            r_lag = 0.0
+            if e_f > 0.3:
+                r_lag = -1.5 * min(e_f - 0.3, 3.0)
             
-            # === 5. ENERGY CONSUMPTION ===
-            power_proxy = abs(car.acceleration * car.velocity)
-            r_energy = W_ENERGY * (power_proxy / max(max_a * v_des, 1.0))
-            
-            # === 6. BCC AWARENESS ===
+            # Anti-stall: penalize sitting near 0 m/s when open road is available
+            r_stall = 0.0
+            if car.velocity < 3.0 and target_v > 8.0 and front_gap > desired_gap:
+                r_stall = -4.0 * (1.0 - car.velocity / 3.0)
+                
+            # === 5. STANDSTILL QUEUE-PACKING & HEADWAY PRECISION ===
+            r_standstill_gap = 0.0
+            r_premature_stop = 0.0
+            if front_car and front_car.velocity <= 0.2:
+                # When vehicle in front is stopped, desired spacing is strictly min_dis (6.0m)
+                gap_excess = max(0.0, front_gap - (min_dis + 0.5))
+                if gap_excess > 0.0:
+                    # Progressive penalty for hanging back in queue
+                    r_standstill_gap = -2.5 * min((gap_excess / 6.0) ** 2, 3.0)
+                elif front_gap >= min_dis - 0.5:
+                    # Reward bonus for holding sweet spot (min_dis +- 0.5m) at standstill
+                    r_standstill_gap = 2.5
+                    
+                # Penalize premature stopping too far from front car
+                if car.velocity < 0.2 and front_gap > min_dis + 1.5:
+                    r_premature_stop = -3.0 * min((front_gap - (min_dis + 1.5)) / min_dis, 2.0)
+
+            # Tail car (boundary vehicle) compensation
+            is_tail_car = (back_car is None or back_car == lead_car)
+            if is_tail_car:
+                r_headway *= 1.5
+                r_standstill_gap *= 1.5
+
+            # === 6. BCC BILATERAL REAR AWARENESS ===
             r_bcc = 0.0
-            if back_gap < desired_gap:
-                back_gap_error = (desired_gap - back_gap) / max(desired_gap, 1.0)
-                r_bcc = W_BCC_REAR * back_gap_error ** 2
+            if back_car and back_car != lead_car:
+                back_gap_raw = (back_car.pos - car.pos - car.length) % road_length
+                if back_gap_raw <= MAX_RADAR_RANGE:
+                    desired_back_gap = min_dis + back_car.velocity * reaction_time
+                    if back_gap_raw < desired_back_gap:
+                        e_b = (desired_back_gap - back_gap_raw) / max(desired_back_gap, 1.0)
+                        r_bcc = -1.0 * (e_b ** 2)
+                        
+            # === 7. SMOOTHNESS, ACTION-RATE & ZERO-ACCELERATION EQUILIBRIUM BIAS ===
+            # Explicit bell-curve peak at a = 0
+            r_accel = 1.0 * np.exp(- (car.acceleration / 0.35) ** 2) - 0.2 * ((car.acceleration / 2.0) ** 2)
+            delta_a = car.acceleration - self.prev_accel[car_idx]
+            r_jerk = -0.6 * ((delta_a / 1.0) ** 2)
             
-            # SAFETY OVERRIDE: If tailgating heavily, disable positive speed/string rewards
-            if r_safety < -0.1:
-                r_speed = min(0.0, r_speed)
-                r_string = min(0.0, r_string)
+            # Action rate-of-change penalty: strictly punishes step-to-step policy chatter
+            act_delta = self.action_deltas[obs_idx] if obs_idx < len(self.action_deltas) else 0.0
+            r_act_delta = -1.5 * ((act_delta / 1.0) ** 2)
+            
+            # Equilibrium Cruising Lock: When within 10% of headway and speed matches, strongly lock a=0.0
+            r_cruise_lock = 0.0
+            if abs(e_f) < 0.10 and abs(v_rel_f) < 0.5 and abs(v_err) < 0.05:
+                r_cruise_lock = 3.0 * np.exp(- (car.acceleration / 0.15) ** 2)
+
+            # === 8. ENERGY EFFICIENCY (Traction power) ===
+            p_pos = max(0.0, car.acceleration * car.velocity)
+            r_energy = -0.2 * (p_pos / max(max_a * v_des, 1.0))
                 
-            # === 7. COLLISION ===
-            r_collision = 0.0
-            currently_colliding = (front_gap < 0.5 or back_gap < 0.5)
-            if currently_colliding:
-                r_collision = W_COLLISION_CONT  # Continuous penalty per step of collision
-                if not self.in_collision[obs_idx]:
-                    r_collision += W_COLLISION_INIT  # Extra on collision START (total -100)
-            self.in_collision[obs_idx] = currently_colliding
-                
-            rewards[obs_idx] = r_string + r_gap + r_speed + r_comfort + r_action_delta + r_energy + r_bcc + r_safety + r_collision
+            rewards[obs_idx] = (
+                r_collision + r_headway + r_danger + r_v_match + 
+                r_closing_damp + r_string + r_speed + r_speed_linear + r_lag + r_stall + 
+                r_standstill_gap + r_premature_stop +
+                r_bcc + r_accel + r_jerk + r_act_delta + r_cruise_lock + r_energy
+            )
             
         return rewards
 
     def _check_collision(self):
-        road_len = self.city.roads[0].length if self.city.roads else 1000
-        cars = sorted(self.city.cars, key=lambda c: c.pos)
-        if len(cars) < 2: return False
-        for i in range(len(cars)):
-            c1 = cars[i]
-            c2 = cars[(i+1)%len(cars)]
-            gap = (c2.pos - c1.pos - c1.length) % road_len
-            if gap < 0.5:
-                return True
-        return False
+        return getattr(self.city, 'collided_this_step', False) or any(
+            getattr(c, 'just_collided', False) or getattr(c, 'collision_timer', 0) == 40
+            for c in self.city.cars
+        )
 
     # Required VecEnv methods
     def close(self): pass

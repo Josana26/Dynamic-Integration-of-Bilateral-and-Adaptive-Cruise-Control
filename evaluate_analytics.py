@@ -33,6 +33,10 @@ def evaluate():
                  env.sim_params['min_dis'], env.sim_params['reaction_time'], 1.0,  # headway
                  env.sim_params['max_a'], env.sim_params['min_a'], 2.0]  # min_gap
     env.city.init(*init_args, dt=env.dt, model='ACC')
+    for c in env.city.cars[1:]:
+        c.is_rl = True
+        c.rl_action = 0.0
+    obs = env._get_obs()
     
     steps = 500
     
@@ -46,7 +50,7 @@ def evaluate():
     prev_accel = np.zeros(env.num_cars)
     
     for _ in range(steps):
-        # Predict actions for all 15 cars using parameter sharing
+        # Predict actions for follower cars using parameter sharing
         actions, _ = model.predict(obs, deterministic=True)
         obs, rewards_step, dones, infos = env.step(actions)
         
@@ -62,7 +66,8 @@ def evaluate():
         cars = env.city.cars
         road_len = env.city.roads[0].length if env.city.roads else 1000
         
-        for i, car in enumerate(cars):
+        # Follower car metrics (indices 1..N-1)
+        for i, car in enumerate(cars[1:], 1):
             current_speeds.append(car.velocity)
             current_accels.append(car.acceleration)
             
@@ -70,8 +75,7 @@ def evaluate():
             j = (car.acceleration - prev_accel[i]) / dt
             current_jerks.append(j)
             
-            # compute gap
-            # Using gap_to just like the environment does for front car
+            # compute gap to front vehicle
             cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car]
             def gap_to(other):
                 g = (car.pos - other.pos) % road_len
