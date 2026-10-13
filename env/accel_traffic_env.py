@@ -457,7 +457,7 @@ class AccelTrafficEnv(VecEnv):
         """Build normalized observations using canonical get_city_obs."""
         return self.get_city_obs(self.city, self.sim_params['v_des'])
 
-    def _calculate_rewards(self):
+    def _calculate_rewards(self, return_breakdown=False):
         """
         Smooth, physically-convex reward function for follower cars (indices 1..N-1).
         Prioritizes collision avoidance, sweet-spot headway tracking, string stability,
@@ -465,7 +465,9 @@ class AccelTrafficEnv(VecEnv):
         """
         cars = self.city.cars
         rewards = np.zeros(self.num_rl_cars, dtype=np.float32)
-        if not cars: return rewards
+        breakdowns = [] if return_breakdown else None
+        if not cars:
+            return (rewards, []) if return_breakdown else rewards
         
         road_length = self.city.roads[0].length if self.city.roads else 1000
         v_des = self.sim_params['v_des']
@@ -662,6 +664,10 @@ class AccelTrafficEnv(VecEnv):
 
             # === 6. BCC BILATERAL REAR AWARENESS & SPRING-DAMPER LATTICE ===
             r_bcc = 0.0
+            r_bcc_tailgate = 0.0
+            r_bcc_damp = 0.0
+            r_bcc_consensus = 0.0
+            back_gap_raw = float('inf')
             if back_car and back_car != lead_car:
                 back_gap_raw = (back_car.pos - car.pos - car.length) % road_length
                 if back_gap_raw <= MAX_RADAR_RANGE:
@@ -669,19 +675,16 @@ class AccelTrafficEnv(VecEnv):
                     e_b = (back_gap_raw - desired_back_gap) / max(desired_back_gap, 1.0)
                     
                     # 1. Rear tailgating buffer: if rear car is dangerously close (e_b < -0.15)
-                    r_bcc_tailgate = 0.0
                     if e_b < -0.15:
                         r_bcc_tailgate = -2.0 * min(abs(e_b + 0.15), 2.5)
                         
                     # 2. Bilateral wave attenuation & consensus: active ONLY when platoon is in motion (> 3.5 m/s)
-                    r_bcc_cruise = 0.0
                     if car.velocity > 3.5 and back_car.velocity > 2.5:
                         r_bcc_damp = -1.0 * min(((back_car.velocity - car.velocity) / 2.0) ** 2, 2.0)
                         v_bilateral_target = 0.5 * (front_car.velocity + back_car.velocity) if front_car else car.velocity
                         r_bcc_consensus = 1.5 * np.exp(- (((car.velocity - v_bilateral_target) / 1.5) ** 2))
-                        r_bcc_cruise = r_bcc_damp + r_bcc_consensus
                         
-                    r_bcc = r_bcc_tailgate + r_bcc_cruise
+                    r_bcc = r_bcc_tailgate + r_bcc_damp + r_bcc_consensus
                         
             # === 7. SMOOTHNESS, ACTION-RATE & ZERO-ACCELERATION EQUILIBRIUM BIAS ===
             delta_a = car.acceleration - self.prev_accel[car_idx]
@@ -716,7 +719,65 @@ class AccelTrafficEnv(VecEnv):
                 r_standstill_gap + r_premature_stop + r_standstill_hold + r_launch + r_open_road_hesitation +
                 r_bcc + r_accel + r_jerk + r_act_delta + r_cruise_lock + r_energy
             )
+
+            if return_breakdown:
+                breakdowns.append({
+                    'car_idx': car_idx,
+                    'inputs': {
+                        'v_ego': float(car.velocity),
+                        'a_cmd': float(car.acceleration),
+                        'front_gap': float(front_gap),
+                        'desired_gap': float(desired_gap),
+                        'effective_desired_gap': float(effective_desired_gap),
+                        'v_rel_f': float(v_rel_f),
+                        'v_lead': float(front_car.velocity) if front_car else 0.0,
+                        'a_lead': float(front_car.acceleration) if front_car else 0.0,
+                        'back_gap': float(back_gap_raw) if (back_car and back_car != lead_car and back_gap_raw <= MAX_RADAR_RANGE) else float('inf'),
+                        'v_rear': float(back_car.velocity) if back_car else 0.0,
+                        'e_f': float(e_f),
+                        'target_v': float(target_v),
+                        'v_err': float(v_err),
+                        'delta_a': float(delta_a),
+                        'jerk': float(abs(delta_a) / self.dt),
+                        'act_delta': float(act_delta),
+                        'has_collided': bool(has_collided),
+                        'is_emergency': bool(is_emergency)
+                    },
+                    'rewards': {
+                        'r_collision': float(r_collision),
+                        'r_danger': float(r_danger),
+                        'r_safety_brake': float(r_safety_brake),
+                        'r_headway': float(r_headway),
+                        'r_lag': float(r_lag),
+                        'r_catchup': float(r_catchup),
+                        'r_open_road_hesitation': float(r_open_road_hesitation),
+                        'r_v_match': float(r_v_match),
+                        'r_closing_damp': float(r_closing_damp),
+                        'r_speed': float(r_speed),
+                        'r_speed_linear': float(r_speed_linear),
+                        'r_stall': float(r_stall),
+                        'r_string': float(r_string),
+                        'r_panic_brake': float(r_panic_brake),
+                        'r_standstill_gap': float(r_standstill_gap),
+                        'r_premature_stop': float(r_premature_stop),
+                        'r_standstill_hold': float(r_standstill_hold),
+                        'r_launch': float(r_launch),
+                        'r_bcc_tailgate': float(r_bcc_tailgate),
+                        'r_bcc_damp': float(r_bcc_damp),
+                        'r_bcc_consensus': float(r_bcc_consensus),
+                        'r_bcc': float(r_bcc),
+                        'r_accel': float(r_accel),
+                        'r_jerk': float(r_jerk),
+                        'r_act_delta': float(r_act_delta),
+                        'r_comf': float(r_jerk + r_act_delta),
+                        'r_cruise_lock': float(r_cruise_lock),
+                        'r_energy': float(r_energy),
+                    },
+                    'total_reward': float(rewards[obs_idx])
+                })
             
+        if return_breakdown:
+            return rewards, breakdowns
         return rewards
 
     def _check_collision(self):
