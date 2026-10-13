@@ -53,9 +53,9 @@ def train():
         env.training = True
         env.norm_obs = False
         env.norm_reward = True
-        env.clip_reward = 10.0
+        env.clip_reward = 25.0
     else:
-        env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
+        env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=25.0)
 
     env = VecMonitor(env)
 
@@ -74,7 +74,7 @@ def train():
             tensorboard_log="./tensorboard_logs/"
         )
         model.gradient_steps = parsed_args.gradient_steps
-        model.learning_starts = 0
+        model.learning_starts = 1500
     else:
         print("Training fresh TD3 policy from scratch...")
         model = TD3(

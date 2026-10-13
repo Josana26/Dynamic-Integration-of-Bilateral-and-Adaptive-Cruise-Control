@@ -13,36 +13,26 @@ class RLCity(City):
         for car in self.cars:
             if getattr(car, 'is_rl', False):
                 car._prev_acc = car.acceleration
+                # First-order physical actuator filter (tau ≈ 0.2s, alpha = 0.35)
+                # Eliminates high-frequency policy chattering and jagged acceleration spikes
+                if hasattr(car, 'rl_action'):
+                    raw_cmd = float(car.rl_action)
+                    prev_cmd = getattr(car, '_filtered_cmd', raw_cmd)
+                    if car.velocity <= 1e-4 and raw_cmd > 0.0:
+                        prev_cmd = max(0.0, prev_cmd)
+                    alpha = 0.35
+                    car.rl_action = alpha * raw_cmd + (1.0 - alpha) * prev_cmd
+                    car._filtered_cmd = car.rl_action
 
         # Let the standard heuristic compute accelerations for all cars
         super().driver_decision()
 
         # Overwrite the acceleration for RL-controlled cars
         dt = self.dt
-        road_len = self.roads[0].length if self.roads else 1000
-        min_dis = getattr(self, 'min_dis', 6.0)
-
         for car in self.cars:
             if getattr(car, 'is_rl', False) and hasattr(car, 'rl_action'):
-                # rl_action is already a raw acceleration value in [min_a, max_a]
+                # Direct acceleration command from the RL model
                 target_acc = float(car.rl_action)
-                
-                # Standstill Auto-Hold Coordination:
-                # If vehicle has come to a stop or is at crawl (v <= 0.01 m/s):
-                if car.velocity <= 0.01:
-                    if target_acc <= 0.0:
-                        target_acc = 0.0
-                    else:
-                        cars_same_road = [c for c in self.cars if c.current_road == car.current_road and c != car]
-                        def gap_to(other):
-                            g = (car.pos - other.pos) % road_len
-                            return g if g > 0 else float('inf')
-                        front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
-                        front_v = front_car.velocity if front_car else 0.0
-                        front_g = (car.pos - front_car.pos - front_car.length) % road_len if front_car else road_len
-                        # If lead vehicle is stopped or stopping and within buffer, hold standstill
-                        if (front_v <= 0.1 or getattr(self, 'leader_stop', False)) and front_g <= min_dis * 1.15:
-                            target_acc = 0.0
 
                 # Enforce physical constraints: min/max acceleration
                 target_acc = max(self.min_a, min(self.max_a, target_acc))
@@ -72,6 +62,8 @@ class RLCity(City):
             car.just_collided = False
             car.just_collided_front = False
             car.just_collided_rear = False
+            car._filtered_cmd = 0.0
+            car._prev_acc = 0.0
 
     def handle_collisions(self):
         self.collided_this_step = False

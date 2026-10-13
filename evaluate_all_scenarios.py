@@ -138,8 +138,22 @@ def evaluate_model_on_scenarios(model_path, scenarios=None):
         prev_acc = np.zeros(14)
         road_len = city_rl.roads[0].length
         
-        follower_max_decel = np.zeros(14)
+        follower_max_decel_rl = np.zeros(14)
+        follower_max_decel_acc = np.zeros(14)
+        follower_max_decel_bcc = np.zeros(14)
+        follower_max_decel_accbcc = np.zeros(14)
         leader_max_decel = 0.0
+        
+        prev_acc_rl = np.zeros(14)
+        prev_acc_acc = np.zeros(14)
+        prev_acc_bcc = np.zeros(14)
+        prev_acc_accbcc = np.zeros(14)
+        
+        jerks_rl, jerks_acc, jerks_bcc, jerks_accbcc = [], [], [], []
+        gaps_rl, gaps_acc, gaps_bcc, gaps_accbcc = [], [], [], []
+        collisions_acc = 0
+        collisions_bcc = 0
+        collisions_accbcc = 0
         
         for step in range(steps):
             city_acc.run(params['dt'])
@@ -155,64 +169,86 @@ def evaluate_model_on_scenarios(model_path, scenarios=None):
             leader = city_rl.cars[0]
             leader_max_decel = max(leader_max_decel, max(0.0, -leader.acceleration))
             
-            step_gaps = []
-            cur_acc = []
-            for i, car in enumerate(city_rl.cars[1:]):
-                cars_same = [c for c in city_rl.cars if c.current_road == car.current_road and c != car]
-                def gap_to(other):
-                    g = (car.pos - other.pos) % road_len
-                    return g if g > 0 else float('inf')
-                front = min(cars_same, key=gap_to, default=None)
-                fg = (car.pos - front.pos - front.length) % road_len if front else road_len
-                step_gaps.append(fg)
-                all_gaps.append(fg)
-                rl_speeds.append(car.velocity)
-                cur_acc.append(car.acceleration)
-                follower_max_decel[i] = max(follower_max_decel[i], max(0.0, -car.acceleration))
-                
-            cur_acc = np.array(cur_acc)
-            if step > 0:
-                rl_jerks.extend(np.abs(cur_acc - prev_acc) / params['dt'])
-            prev_acc = cur_acc
-            rl_accels.extend(cur_acc)
+            # Helper to collect metrics per city
+            def step_metrics(city, prev_acc, follower_max_decel, jerks_list, gaps_list):
+                step_gaps = []
+                cur_acc = []
+                for i, car in enumerate(city.cars[1:]):
+                    cars_same = [c for c in city.cars if c.current_road == car.current_road and c != car]
+                    def gap_to(other):
+                        g = (car.pos - other.pos) % road_len
+                        return g if g > 0 else float('inf')
+                    front = min(cars_same, key=gap_to, default=None)
+                    fg = (car.pos - front.pos - front.length) % road_len if front else road_len
+                    step_gaps.append(fg)
+                    gaps_list.append(fg)
+                    cur_acc.append(car.acceleration)
+                    follower_max_decel[i] = max(follower_max_decel[i], max(0.0, -car.acceleration))
+                cur_acc = np.array(cur_acc)
+                if step > 0:
+                    jerks_list.extend(np.abs(cur_acc - prev_acc) / params['dt'])
+                min_g = min(step_gaps)
+                collided = (min_g < 0.5) or getattr(city, 'collided_this_step', False)
+                return cur_acc, min_g, collided
             
-            min_g = min(step_gaps)
-            min_gaps_seen.append(min_g)
-            if min_g < 0.5 or getattr(city_rl, 'collided_this_step', False):
-                collisions += 1
+            cur_acc_rl, min_g_rl, col_rl = step_metrics(city_rl, prev_acc_rl, follower_max_decel_rl, jerks_rl, gaps_rl)
+            cur_acc_acc, min_g_acc, col_acc = step_metrics(city_acc, prev_acc_acc, follower_max_decel_acc, jerks_acc, gaps_acc)
+            cur_acc_bcc, min_g_bcc, col_bcc = step_metrics(city_bcc, prev_acc_bcc, follower_max_decel_bcc, jerks_bcc, gaps_bcc)
+            cur_acc_accbcc, min_g_accbcc, col_accbcc = step_metrics(city_accbcc, prev_acc_accbcc, follower_max_decel_accbcc, jerks_accbcc, gaps_accbcc)
+            
+            prev_acc_rl = cur_acc_rl
+            prev_acc_acc = cur_acc_acc
+            prev_acc_bcc = cur_acc_bcc
+            prev_acc_accbcc = cur_acc_accbcc
+            
+            min_gaps_seen.append(min_g_rl)
+            if col_rl: collisions += 1
+            if col_acc: collisions_acc += 1
+            if col_bcc: collisions_bcc += 1
+            if col_accbcc: collisions_accbcc += 1
+            
+            for car in city_rl.cars[1:]:
+                rl_speeds.append(car.velocity)
                 
         e_acc = sum(c.energy_used for c in city_acc.cars)
         e_bcc = sum(c.energy_used for c in city_bcc.cars)
         e_accbcc = sum(c.energy_used for c in city_accbcc.cars)
         e_rl = sum(c.energy_used for c in city_rl.cars)
         
-        # String stability damping ratio: (max follower decel) / (leader max decel)
-        # Ratio <= 1.0 indicates string-stable attenuation (no backward shockwave amplification)
-        damping_ratio = (np.max(follower_max_decel) / leader_max_decel) if leader_max_decel > 0.1 else 1.0
+        # String stability damping ratios
+        l_decel = max(leader_max_decel, 0.1)
+        damping_rl = float(np.max(follower_max_decel_rl) / l_decel)
+        damping_acc = float(np.max(follower_max_decel_acc) / l_decel)
+        damping_bcc = float(np.max(follower_max_decel_bcc) / l_decel)
+        damping_accbcc = float(np.max(follower_max_decel_accbcc) / l_decel)
         
         sc_res = {
             "name": sc['name'],
-            "collisions": collisions,
-            "min_gap": float(min(min_gaps_seen)),
-            "mean_gap": float(np.mean(all_gaps)),
-            "std_gap": float(np.std(all_gaps)),
-            "mean_speed": float(np.mean(rl_speeds)),
-            "target_speed": float(sc['v_des']),
-            "mean_jerk": float(np.mean(rl_jerks)) if rl_jerks else 0.0,
-            "max_jerk": float(np.max(rl_jerks)) if rl_jerks else 0.0,
+            "collisions_rl": collisions,
+            "min_gap_rl": float(min(min_gaps_seen)),
+            "mean_gap_rl": float(np.mean(gaps_rl)),
+            "mean_speed_rl": float(np.mean(rl_speeds)),
+            "mean_jerk_rl": float(np.mean(jerks_rl)) if jerks_rl else 0.0,
+            "mean_jerk_acc": float(np.mean(jerks_acc)) if jerks_acc else 0.0,
+            "mean_jerk_bcc": float(np.mean(jerks_bcc)) if jerks_bcc else 0.0,
+            "mean_jerk_accbcc": float(np.mean(jerks_accbcc)) if jerks_accbcc else 0.0,
             "energy_rl": float(e_rl),
             "energy_acc": float(e_acc),
             "energy_bcc": float(e_bcc),
             "energy_accbcc": float(e_accbcc),
-            "string_stability_ratio": float(damping_ratio)
+            "damping_rl": damping_rl,
+            "damping_acc": damping_acc,
+            "damping_bcc": damping_bcc,
+            "damping_accbcc": damping_accbcc,
         }
         results[sc['id']] = sc_res
         
         print(f"\n--- {sc['name']} ---")
-        print(f"  Collisions: {collisions} | Min Gap: {sc_res['min_gap']:.2f} m | Mean Gap: {sc_res['mean_gap']:.2f} m (std: {sc_res['std_gap']:.2f}m)")
-        print(f"  Speed: {sc_res['mean_speed']:.2f} m/s (Target: {sc_res['target_speed']:.1f}) | Mean Jerk: {sc_res['mean_jerk']:.2f} m/s^3 (Max: {sc_res['max_jerk']:.2f})")
-        print(f"  Energy (kWh): RL={e_rl:.3f} | ACC={e_acc:.3f} | BCC={e_bcc:.3f} | ACC+BCC={e_accbcc:.3f}")
-        print(f"  Deceleration Shockwave Ratio: {damping_ratio:.2f}x ({'STABLE' if damping_ratio <= 1.05 else 'AMPLIFYING'})")
+        print(f"  Collisions: RL={collisions} | ACC={collisions_acc} | BCC={collisions_bcc} | ACC+BCC={collisions_accbcc}")
+        print(f"  Min Gap:    RL={sc_res['min_gap_rl']:.2f}m | Mean Gap: RL={sc_res['mean_gap_rl']:.2f}m")
+        print(f"  Mean Jerk:  RL={sc_res['mean_jerk_rl']:.2f} m/s^3 | ACC={sc_res['mean_jerk_acc']:.2f} | BCC={sc_res['mean_jerk_bcc']:.2f} | ACC+BCC={sc_res['mean_jerk_accbcc']:.2f}")
+        print(f"  Energy:     RL={e_rl:.3f} kWh | ACC={e_acc:.3f} | BCC={e_bcc:.3f} | ACC+BCC={e_accbcc:.3f}")
+        print(f"  Shockwave:  RL={damping_rl:.2f}x | ACC={damping_acc:.2f}x | BCC={damping_bcc:.2f}x | ACC+BCC={damping_accbcc:.2f}x")
         
     return results
 

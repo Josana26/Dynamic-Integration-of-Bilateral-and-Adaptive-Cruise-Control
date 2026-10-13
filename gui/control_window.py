@@ -473,97 +473,49 @@ class ControlWindow:
     def plot_vel_acc_profiles(self):
         dt = self.dt  # Consistent time step
 
-        fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex='col')
+        fig, axes = plt.subplots(3, 3, figsize=(16, 10), sharex='col')
 
-        # === ACC ===
-        # Velocity (left)
-        for idx, car in enumerate(self.city_acc.cars):
-            time_axis = [dt * i for i in range(len(car.vel_history))]
-            if idx == 0:
-                axes[0, 0].plot(time_axis, car.vel_history,color="red", linewidth=0.5)
-            elif idx == 2:
-                axes[0, 0].plot(time_axis, car.vel_history,color="green", linewidth=0.5)
-            else:
-                axes[0, 0].plot(time_axis, car.vel_history,color="blue", linewidth = 0.5)
+        models = [
+            ("ACC", self.city_acc, 0),
+            ("BCC", self.city_bcc, 1),
+            ("ACC+BCC Integration", self.city_accbcc, 2)
+        ]
 
-        axes[0, 0].set_title("ACC Velocity")
-        axes[0, 0].set_ylabel("Velocity (m/s)")
-        # axes[0, 0].legend(fontsize="x-small")
-        axes[0, 0].grid(True)
+        min_dis = getattr(self, 'min_dis', 6.0)
 
-        # Acceleration (right)
-        for idx, car in enumerate(self.city_acc.cars):
-            time_axis = [dt * i for i in range(len(car.acc_history))]
-            if idx == 0:
-                axes[0, 1].plot(time_axis, car.acc_history, color="red", linewidth=0.5)
-            elif idx == 2:
-                axes[0, 1].plot(time_axis, car.acc_history, color="green", linewidth=0.5)
-            else:
-                axes[0, 1].plot(time_axis, car.acc_history, color="blue", linewidth = 0.5)
-        axes[0, 1].set_title("ACC Acceleration")
-        axes[0, 1].set_ylabel("Acceleration (m/s^2)")
-        # axes[0, 1].legend(fontsize="x-small")
-        axes[0, 1].grid(True)
+        for name, city, row in models:
+            # Velocity (Col 0)
+            for idx, car in enumerate(city.cars):
+                time_axis = [dt * i for i in range(len(car.vel_history))]
+                color = "red" if idx == 0 else "green" if idx == 2 else "blue"
+                axes[row, 0].plot(time_axis, car.vel_history, color=color, linewidth=0.6)
+            axes[row, 0].set_title(f"{name} Velocity")
+            axes[row, 0].set_ylabel("Velocity (m/s)")
+            axes[row, 0].grid(True)
+            if row == 2: axes[row, 0].set_xlabel("Time (s)")
 
-        # === BCC ===
-        # Velocity (left)
-        for idx, car in enumerate(self.city_bcc.cars):
-            time_axis = [dt * i for i in range(len(car.vel_history))]
-            if idx == 0:
-                axes[1, 0].plot(time_axis, car.vel_history, color="red", linewidth=0.5)
-            elif idx == 2:
-                axes[1, 0].plot(time_axis, car.vel_history, color="green", linewidth=0.5)
-            else:
-                axes[1, 0].plot(time_axis, car.vel_history, color="blue", linewidth = 0.5)
-        axes[1, 0].set_title("BCC Velocity")
-        axes[1, 0].set_ylabel("Velocity (m/s)")
-        # axes[1, 0].legend(fontsize="x-small")
-        axes[1, 0].grid(True)
+            # Acceleration (Col 1)
+            for idx, car in enumerate(city.cars):
+                time_axis = [dt * i for i in range(len(car.acc_history))]
+                color = "red" if idx == 0 else "green" if idx == 2 else "blue"
+                axes[row, 1].plot(time_axis, car.acc_history, color=color, linewidth=0.6)
+            axes[row, 1].set_title(f"{name} Acceleration")
+            axes[row, 1].set_ylabel("Accel (m/s^2)")
+            axes[row, 1].grid(True)
+            if row == 2: axes[row, 1].set_xlabel("Time (s)")
 
-        # Acceleration (right)
-        for idx, car in enumerate(self.city_bcc.cars):
-            time_axis = [dt * i for i in range(len(car.acc_history))]
-            if idx == 0:
-                axes[1, 1].plot(time_axis, car.acc_history, color="red", linewidth=0.5)
-            elif idx == 2:
-                axes[1, 1].plot(time_axis, car.acc_history, color="green", linewidth=0.5)
-            else:
-                axes[1, 1].plot(time_axis, car.acc_history, color="blue", linewidth = 0.5)
-        axes[1, 1].set_title("BCC Acceleration")
-        axes[1, 1].set_ylabel("Acceleration  (m/s^2)")
-        # axes[1, 1].legend(fontsize="x-small")
-        axes[1, 1].grid(True)
-
-        # === ACC+BCC ===
-        # Velocity (left)
-        for idx, car in enumerate(self.city_accbcc.cars):
-            time_axis = [dt * i for i in range(len(car.vel_history))]
-            if idx == 0:
-                axes[2, 0].plot(time_axis, car.vel_history, color="red", linewidth=0.5)
-            elif idx == 2:
-                axes[2, 0].plot(time_axis, car.vel_history, color="green", linewidth=0.5)
-            else:
-                axes[2, 0].plot(time_axis, car.vel_history, color="blue", linewidth = 0.5)
-        axes[2, 0].set_title("ACC+BCC Integration Velocity")
-        axes[2, 0].set_xlabel("Time (s)")
-        axes[2, 0].set_ylabel("Velocity (m/s)")
-        # axes[2, 0].legend(fontsize="x-small")
-        axes[2, 0].grid(True)
-
-        # Acceleration (right)
-        for idx, car in enumerate(self.city_accbcc.cars):
-            time_axis = [dt * i for i in range(len(car.acc_history))]
-            if idx == 0:
-                axes[2, 1].plot(time_axis, car.acc_history, color="red", linewidth=0.5)
-            elif idx == 2:
-                axes[2, 1].plot(time_axis, car.acc_history, color="green", linewidth=0.5)
-            else:
-                axes[2, 1].plot(time_axis, car.acc_history, color="blue", linewidth = 0.5)
-        axes[2, 1].set_title("ACC+BCC Integration Acceleration")
-        axes[2, 1].set_xlabel("Time (s)")
-        axes[2, 1].set_ylabel("Acceleration (m/s^2)")
-        # axes[2, 1].legend(fontsize="x-small")
-        axes[2, 1].grid(True)
+            # Inter-Vehicle Gap (Col 2)
+            for idx, car in enumerate(city.cars):
+                if idx == 0:
+                    continue
+                time_axis = [dt * i for i in range(len(car.gap_history))]
+                color = "green" if idx == 2 else "blue"
+                axes[row, 2].plot(time_axis, car.gap_history, color=color, linewidth=0.6)
+            axes[row, 2].axhline(y=min_dis, color="orange", linestyle="--", linewidth=1.0, alpha=0.8, label=f"min_dis ({min_dis}m)")
+            axes[row, 2].set_title(f"{name} Inter-Vehicle Gap")
+            axes[row, 2].set_ylabel("Gap (m)")
+            axes[row, 2].grid(True)
+            if row == 2: axes[row, 2].set_xlabel("Time (s)")
 
         plt.tight_layout()
         plt.show()

@@ -51,6 +51,7 @@ class City:
             car = Car(length=car_length, color=color, pos=pos,min_dis=min_dis, velocity=velocity, acceleration=0, current_road=road)
             car.original_color = color  
             car.collision_timer = 0
+            car.gap_history = [headway if i > 0 else 0.0]
             self.cars.append(car)
             road.enter_road(car)
 
@@ -80,18 +81,18 @@ class City:
         gaps = []
         road_length = self.roads[0].length if self.roads else 1000
         for idx, car in enumerate(self.cars):
-            if idx ==0:
+            if idx == 0:
+                car.gap_history.append(0.0)
                 continue
             cars_same_road = [c for c in self.cars if c.current_road == car.current_road and c != car]
 
             def gap_to(other):
-                gap = (car.pos - other.pos ) % road_length
+                gap = (car.pos - other.pos) % road_length
                 return gap if gap > 0 else float('inf')
             
             front_car = min(cars_same_road, key=gap_to, default=None) if cars_same_road else None
-            gap = ((car.pos - front_car.pos - car.length) % road_length)
-            if idx == 0: 
-                print(gap)
+            gap = ((car.pos - front_car.pos - front_car.length) % road_length) if front_car else road_length
+            car.gap_history.append(gap)
             if gap > 0:
                 gaps.append(gap)
     
@@ -103,7 +104,6 @@ class City:
             if current_max_gap > self.overall_max_gap:
                 self.overall_max_gap = current_max_gap
 
-            
             self.all_gaps.extend(gaps)
 
     def set_leader_stop(self, leader_stop):
