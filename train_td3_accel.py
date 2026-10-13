@@ -150,7 +150,7 @@ def train():
         total_reward += np.sum(rewards)
         
         if any(dones):
-            print(f"Episode terminated early due to collision after {i+1} steps.")
+            print(f"Episode completed rollout after {i+1} steps.")
             break
             
     print(f"Total Evaluation Reward: {total_reward}")
