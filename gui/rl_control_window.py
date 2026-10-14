@@ -14,6 +14,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from gui.control_window import ControlWindow
 from simulation.rl_city import RLCity
 from env.accel_traffic_env import AccelTrafficEnv
+from simulation.config import PROJECT_ROOT, MODELS_DIR, resolve_model_path
 
 class RLControlWindow(ControlWindow):
     def __init__(self, master):
@@ -104,31 +105,21 @@ class RLControlWindow(ControlWindow):
 
     def _scan_available_models(self):
         models = {}
-        # 1. Active default model
-        if os.path.exists("td3_accel_agent.zip"):
-            models["Default (td3_accel_agent.zip)"] = os.path.abspath("td3_accel_agent.zip")
+        # 1. Active default model from models/ directory
+        default_path = resolve_model_path("td3_accel_agent.zip")
+        if os.path.exists(default_path):
+            models["Default (td3_accel_agent.zip)"] = os.path.abspath(default_path)
 
         # 2. Versioned models from models/ directory
-        models_dir = os.path.abspath("models")
+        models_dir = str(MODELS_DIR)
         if os.path.exists(models_dir):
             for root, _, files in os.walk(models_dir):
                 for f in sorted(files):
-                    if f.endswith(".zip"):
+                    if f.endswith(".zip") and f != "td3_accel_agent.zip":
                         full_path = os.path.join(root, f)
-                        rel_path = os.path.relpath(full_path, start=os.getcwd()).replace("\\", "/")
+                        rel_path = os.path.relpath(full_path, start=str(PROJECT_ROOT)).replace("\\", "/")
                         label = f"models/{f}" if root == models_dir else rel_path
                         models[label] = full_path
-
-        # 3. Any additional root .zip files
-        if os.path.exists("td3_accel_agent_prev.zip") and "models/TD3_19.zip" not in models:
-            models["Previous (td3_accel_agent_prev.zip)"] = os.path.abspath("td3_accel_agent_prev.zip")
-
-        try:
-            for f in sorted(os.listdir(".")):
-                if f.endswith(".zip") and f not in ["td3_accel_agent.zip", "td3_accel_agent_prev.zip"]:
-                    models[f] = os.path.abspath(f)
-        except Exception:
-            pass
 
         return models
 

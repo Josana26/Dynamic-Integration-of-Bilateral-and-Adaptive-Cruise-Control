@@ -1,0 +1,17 @@
+# Core Deep Reinforcement Learning & Simulation Dependencies
+gymnasium==1.2.3
+stable-baselines3==2.8.0
+torch==2.11.0
+
+# Scientific Computing & Data Processing
+numpy==2.4.4
+pandas==3.0.2
+
+# Visualization & Plotting
+matplotlib==3.10.9
+pillow==12.2.0
+
+# Video Recording & Telemetry
+opencv-python==5.0.0.93
+tensorboard==2.20.0
+cloudpickle==3.1.2

@@ -1,22 +1,38 @@
 import os
 import sys
 import csv
+from pathlib import Path
 import numpy as np
 from stable_baselines3 import TD3
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from simulation.city import City
 from simulation.rl_city import RLCity
+from simulation.config import DATA_DIR, resolve_model_path, DEFAULT_SIM_PARAMS
 from env.accel_traffic_env import AccelTrafficEnv
 
 def load_csv_profile(filename):
+    """Loads a velocity profile from CSV file."""
+    profile_path = Path(filename)
+    if not profile_path.is_absolute():
+        profile_path = DATA_DIR / profile_path.name
+        
     profile = []
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
+    if profile_path.exists():
+        with open(profile_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 profile.append((float(row['time']), float(row['velocity'])))
+    else:
+        print(f"Warning: CSV profile not found at {profile_path}")
     return profile
 
 def get_scenarios():
+    """Returns the official 7 operational evaluation scenarios."""
     scenarios = [
         {
             "id": "steady_15",
@@ -37,7 +53,7 @@ def get_scenarios():
             "name": "3. Urban Stop-and-Go (data.csv)",
             "v_des": 15.0,
             "type": "csv",
-            "csv_file": "data/data.csv",
+            "csv_file": "data.csv",
             "dur": 60.0
         },
         {
@@ -45,7 +61,7 @@ def get_scenarios():
             "name": "4. Speed Drop & Recovery (data1.csv)",
             "v_des": 15.0,
             "type": "csv",
-            "csv_file": "data/data1.csv",
+            "csv_file": "data1.csv",
             "dur": 60.0
         },
         {
@@ -74,28 +90,30 @@ def get_scenarios():
     ]
     return scenarios
 
-def evaluate_model_on_scenarios(model_path, scenarios=None):
+def evaluate_model_on_scenarios(model_path="td3_accel_agent.zip", scenarios=None):
+    """
+    Evaluates policy model across benchmark scenarios and computes comparative
+    metrics against classical ACC, BCC, and ACC+BCC models.
+    """
+    resolved_model = resolve_model_path(model_path)
     if scenarios is None:
         scenarios = get_scenarios()
         
     print(f"\n=======================================================")
-    print(f"EVALUATING MODEL: {model_path}")
+    print(f"EVALUATING MODEL: {resolved_model}")
     print(f"=======================================================")
     
-    if not os.path.exists(model_path):
-        print(f"Error: Model file {model_path} does not exist!")
+    if not os.path.exists(resolved_model):
+        print(f"Error: Model file {resolved_model} does not exist!")
         return None
         
-    model = TD3.load(model_path)
+    model = TD3.load(resolved_model)
     results = {}
     
     for sc in scenarios:
-        params = {
-            'car_number': 15, 'kd': 0.9, 'kv': 0.5, 'kc': 0.4,
-            'v_des': sc['v_des'], 'max_v': 30.0, 'min_v': 0.0,
-            'min_dis': 6.0, 'reaction_time': 0.8, 'headway_time': 1.0,
-            'max_a': 3.0, 'min_a': -5.0, 'min_gap': 2.0, 'dt': 0.1
-        }
+        params = dict(DEFAULT_SIM_PARAMS)
+        params['v_des'] = sc['v_des']
+        
         init_args = [params[k] for k in ['car_number', 'kd', 'kv', 'kc', 'v_des', 'max_v', 'min_v', 'min_dis', 'reaction_time', 'headway_time', 'max_a', 'min_a', 'min_gap']]
         
         city_rl = RLCity()
@@ -121,7 +139,6 @@ def evaluate_model_on_scenarios(model_path, scenarios=None):
         elif sc['type'] == 'synthetic':
             lead_profile = sc['profile']
         elif sc['type'] == 'wave':
-            # Generate sine wave: v(t) = 15.0 + 4.0 * sin(2*pi*t / 15)
             lead_profile = [(t, 15.0 + 4.0 * np.sin(2 * np.pi * t / 15.0)) for t in np.arange(0, sc['dur'] + 1.0, 0.5)]
             
         if lead_profile:
@@ -131,11 +148,8 @@ def evaluate_model_on_scenarios(model_path, scenarios=None):
         steps = int(sc['dur'] / params['dt'])
         collisions = 0
         min_gaps_seen = []
-        all_gaps = []
+        gaps_rl = []
         rl_speeds = []
-        rl_accels = []
-        rl_jerks = []
-        prev_acc = np.zeros(14)
         road_len = city_rl.roads[0].length
         
         follower_max_decel_rl = np.zeros(14)
@@ -150,7 +164,7 @@ def evaluate_model_on_scenarios(model_path, scenarios=None):
         prev_acc_accbcc = np.zeros(14)
         
         jerks_rl, jerks_acc, jerks_bcc, jerks_accbcc = [], [], [], []
-        gaps_rl, gaps_acc, gaps_bcc, gaps_accbcc = [], [], [], []
+        gaps_acc, gaps_bcc, gaps_accbcc = [], [], []
         collisions_acc = 0
         collisions_bcc = 0
         collisions_accbcc = 0
@@ -169,7 +183,6 @@ def evaluate_model_on_scenarios(model_path, scenarios=None):
             leader = city_rl.cars[0]
             leader_max_decel = max(leader_max_decel, max(0.0, -leader.acceleration))
             
-            # Helper to collect metrics per city
             def step_metrics(city, prev_acc, follower_max_decel, jerks_list, gaps_list):
                 step_gaps = []
                 cur_acc = []

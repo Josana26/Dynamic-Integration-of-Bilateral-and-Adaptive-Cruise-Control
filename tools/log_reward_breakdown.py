@@ -1,31 +1,34 @@
 import os
 import sys
 import csv
+from pathlib import Path
 import numpy as np
 from stable_baselines3 import TD3
 
-# Ensure imports work
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from simulation.rl_city import RLCity
+from simulation.config import LOGS_DIR, resolve_model_path, DEFAULT_SIM_PARAMS
 from env.accel_traffic_env import AccelTrafficEnv
 
 def generate_reward_breakdown_log(
     model_path="td3_accel_agent.zip",
-    output_log="reward_breakdown_log.txt",
-    output_csv="reward_telemetry.csv"
+    output_log=None,
+    output_csv=None
 ):
     """
     Executes a high-fidelity 5-phase platoon simulation and records every single
     input feature and evaluated reward value for all 24 reward function terms.
     """
-    print(f"Loading policy model from {model_path}...")
-    model = TD3.load(model_path)
+    resolved_model = resolve_model_path(model_path)
+    print(f"Loading policy model from {resolved_model}...")
+    model = TD3.load(resolved_model)
     env = AccelTrafficEnv()
     
     city = RLCity()
-    # 15 cars, v_des=15.0, max_v=30.0, min_v=0.0, min_dis=6.0, reaction_time=0.8, max_a=3.0, min_a=-5.0
     params = [15, 0.9, 0.5, 0.4, 15.0, 30.0, 0.0, 6.0, 0.8, 1.0, 3.0, -5.0, 2.0]
     dt = 0.1
     city.init(*params, dt=dt, model='ACC')
@@ -33,7 +36,6 @@ def generate_reward_breakdown_log(
         c.is_rl = (i > 0)
         c.rl_action = 0.0
     
-    # Attach city to env
     env.city = city
     env.sim_params['v_des'] = 15.0
     env.prev_accel = np.zeros(15)
@@ -41,11 +43,10 @@ def generate_reward_breakdown_log(
     env.action_deltas = np.zeros(14)
     env.in_collision = np.zeros(14, dtype=bool)
     
-    # Text Log Lines
     lines = []
     lines.append("=" * 170)
     lines.append("        REINFORCEMENT LEARNING REWARD FUNCTION INPUTS & OUTPUTS RUNTIME LOG (WITH EXACT VALUES)")
-    lines.append(f"Model: {model_path} | Environment: AccelTrafficEnv | Followers: 14 RL Agents | Timestep dt = {dt}s")
+    lines.append(f"Model: {resolved_model} | Environment: AccelTrafficEnv | Followers: 14 RL Agents | Timestep dt = {dt}s")
     lines.append("=" * 170)
     lines.append("")
     lines.append("SUMMARY OF ALL 24 REWARD COMPONENTS LOGGED:")
@@ -58,14 +59,11 @@ def generate_reward_breakdown_log(
     lines.append("  Comfort & Power    : r_acc (Cruise a=0 Bias), r_jerk (Jerk Minimization), r_act_d (Action Delta Chattering), r_c_lock (Cruising Attractor Lock), r_enrg (Traction Power)")
     lines.append("=" * 170)
     
-    # Setup CSV Writer
     csv_rows = []
     csv_headers = [
         "phase", "step", "time_sec", "car_idx",
-        # Inputs
         "v_ego", "a_cmd", "front_gap", "desired_gap", "effective_desired_gap", "v_rel_f",
         "v_lead", "a_lead", "back_gap", "v_rear", "e_f", "target_v", "v_err", "jerk", "act_delta",
-        # Reward values
         "r_collision", "r_danger", "r_safety_brake",
         "r_headway", "r_lag", "r_catchup", "r_open_road_hesitation",
         "r_v_match", "r_closing_damp", "r_speed", "r_speed_linear", "r_stall",
@@ -134,7 +132,6 @@ def generate_reward_breakdown_log(
         elif ph['setup'] == "resume":
             city.set_leader_stop(False)
             
-        # Table Header with ALL 24 individual reward values + inputs
         header_line1 = (
             f"{'Step':4s} | {'Time':5s} | {'v_ego':6s} {'a_cmd':6s} {'s_front':7s} {'s_des':6s} {'v_rel':6s} {'a_lead':6s} | "
             f"{'r_col':5s} {'r_dng':5s} {'r_safe':6s} {'r_head':6s} {'r_lag':5s} {'r_ctch':6s} {'r_oph':5s} "
@@ -164,10 +161,8 @@ def generate_reward_breakdown_log(
                 
             city.run(dt)
             
-            # Use canonical breakdown method from environment
             all_rewards, breakdowns = env._calculate_rewards(return_breakdown=True)
             
-            # Focus on Car 1 (first follower directly behind leader) for table display
             b1 = breakdowns[0]
             inp = b1['inputs']
             rew = b1['rewards']
@@ -178,7 +173,6 @@ def generate_reward_breakdown_log(
                 
             t_sec = global_step * dt
             
-            # Format row with EVERY individual reward value
             row = (
                 f"{step:4d} | {t_sec:4.1f}s | {inp['v_ego']:6.2f} {inp['a_cmd']:+6.2f} {inp['front_gap']:7.2f} {inp['desired_gap']:6.2f} {inp['v_rel_f']:+6.2f} {inp['a_lead']:+6.2f} | "
                 f"{rew['r_collision']:+5.1f} {rew['r_danger']:+5.1f} {rew['r_safety_brake']:+6.2f} {rew['r_headway']:+6.2f} {rew['r_lag']:+5.1f} {rew['r_catchup']:+6.2f} {rew['r_open_road_hesitation']:+5.1f} "
@@ -188,7 +182,6 @@ def generate_reward_breakdown_log(
             )
             lines.append(row)
             
-            # Add to CSV for all followers
             for b in breakdowns:
                 ci = b['car_idx']
                 binp = b['inputs']
@@ -200,7 +193,6 @@ def generate_reward_breakdown_log(
                     f"{binp['v_lead']:.3f}", f"{binp['a_lead']:.3f}", f"{binp['back_gap']:.3f}", f"{binp['v_rear']:.3f}",
                     f"{binp['e_f']:.4f}", f"{binp['target_v']:.3f}", f"{binp['v_err']:.4f}",
                     f"{binp['jerk']:.3f}", f"{binp['act_delta']:.4f}",
-                    # Rewards
                     f"{brew['r_collision']:.3f}", f"{brew['r_danger']:.3f}", f"{brew['r_safety_brake']:.3f}",
                     f"{brew['r_headway']:.3f}", f"{brew['r_lag']:.3f}", f"{brew['r_catchup']:.3f}", f"{brew['r_open_road_hesitation']:.3f}",
                     f"{brew['r_v_match']:.3f}", f"{brew['r_closing_damp']:.3f}", f"{brew['r_speed']:.3f}", f"{brew['r_speed_linear']:.3f}", f"{brew['r_stall']:.3f}",
@@ -213,7 +205,6 @@ def generate_reward_breakdown_log(
                 
             global_step += 1
             
-        # Append In-Depth Audit Snapshot for this Phase
         if snapshot_data:
             lines.append("")
             lines.append(f"  >>> MATHEMATICAL REWARD AUDIT SNAPSHOT ({ph['name']} @ step {snapshot_step}):")
@@ -232,18 +223,24 @@ def generate_reward_breakdown_log(
             lines.append(f"        TOTAL STEP REWARD   : {snapshot_data['total_reward']:+8.4f}")
             lines.append("")
             
-    # Write Text Log
-    with open(output_log, "w", encoding="utf-8") as f:
+    # Resolve output targets
+    log_file = Path(output_log) if output_log else LOGS_DIR / "reward_breakdown_log.txt"
+    csv_file = Path(output_csv) if output_csv else LOGS_DIR / "reward_telemetry.csv"
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    csv_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(log_file, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-    print(f"Generated text runtime reward log at: {output_log}")
+    print(f"Generated text runtime reward log at: {log_file}")
     
-    # Write CSV Log
-    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+    with open(csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerows(csv_rows)
-    print(f"Generated CSV telemetry reward log at: {output_csv}")
-    
-    return output_log, output_csv
+    print(f"Generated CSV telemetry reward log at: {csv_file}")
+
+    return str(log_file), str(csv_file)
 
 if __name__ == "__main__":
-    generate_reward_breakdown_log()
+    target = sys.argv[1] if len(sys.argv) > 1 else "td3_accel_agent.zip"
+    generate_reward_breakdown_log(target)

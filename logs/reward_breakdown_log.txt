@@ -1,6 +1,6 @@
 ==========================================================================================================================================================================
         REINFORCEMENT LEARNING REWARD FUNCTION INPUTS & OUTPUTS RUNTIME LOG (WITH EXACT VALUES)
-Model: td3_accel_agent.zip | Environment: AccelTrafficEnv | Followers: 14 RL Agents | Timestep dt = 0.1s
+Model: D:\Desktop\Arya\Projects\ACC and BCC Python Code\Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control\models\td3_accel_agent.zip | Environment: AccelTrafficEnv | Followers: 14 RL Agents | Timestep dt = 0.1s
 ==========================================================================================================================================================================
 
 SUMMARY OF ALL 24 REWARD COMPONENTS LOGGED:

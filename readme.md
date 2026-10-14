@@ -1,115 +1,146 @@
-# Traffic Simulation: ACC, BCC, and RL Integration
+# Dynamic Integration of Bilateral and Adaptive Cruise Control with Multi-Agent Reinforcement Learning
 
-This project simulates traffic flow using car-following models, including Adaptive Cruise Control (ACC), Bilateral Cruise Control (BCC), an integrated model of ACC + BCC with dynamic switching, and a Reinforcement Learning (RL) agent trained using TD3. The simulation is visualized using a Tkinter-based GUI and includes advanced features like energy consumption tracking, collision handling, and custom velocity profiles.
-
-## Project Structure
-
-The codebase is modularized into several logical directories:
-
-- `simulation/`: Contains the core physics engine and simulation loops.
-  - `car.py`: Defines the `Car` class and its dynamics (energy calculation, collision physics).
-  - `road.py`: Defines the `Road` boundaries.
-  - `city.py`: The base simulation manager for ACC, BCC, and ACC+BCC models.
-  - `rl_city.py`: An extension of the city manager that supports RL-controlled vehicles.
-- `gui/`: Contains the graphical user interfaces and rendering logic.
-  - `control_window.py`: The base GUI controller for running and plotting the simulation.
-  - `rl_control_window.py`: An extended GUI that includes the RL TD3 Agent alongside standard models.
-  - `transportation_painter.py`: Handles canvas drawing and visualizations.
-- `env/`: Contains the OpenAI Gym environment for training the RL model.
-  - `accel_traffic_env.py`: The custom Gym environment used to train the TD3 agent.
-- `data/`: Contains CSV files for custom velocity profiles.
-- `train_td3_accel.py`: Script to train the TD3 RL agent from scratch.
-- `run_headless.py`: Runs the simulation without a GUI for evaluation and benchmarking.
-
-## How It Works
-
-- The simulation creates a number of cars on a circular road.
-- Each car's acceleration is determined by the selected car-following model (ACC, BCC, ACC+BCC, or RL).
-- The GUI allows you to set parameters such as the number of cars, control gains (`kd`, `kv`, `kc`), desired velocity, minimum distance (`min_dis`), minimum gap for collision (`min_gap`), and more.
-- Four separate simulations run simultaneously to compare ACC, BCC, ACC+BCC, and RL models side-by-side.
-
-## How to Run
-
-1. **Requirements**: Python 3.x. Requires `stable-baselines3`, `gymnasium`, `numpy`, and `matplotlib`.
-2. **Start the Simulation**:
-   - Run the RL-enabled control window as a module from the root directory:
-     ```sh
-     python -m gui.rl_control_window
-     ```
-3. **Controls**:
-   - **Run**: Starts the simulation.
-   - **Stop Lead / Resume Lead**: Pauses/resumes the lead car to test shockwave propagation.
-   - **Show Graphs**: Generates matplotlib velocity and acceleration profiles for all models.
-
-## Key Features
-
-### 1. Reinforcement Learning (TD3) Integration
-
-The project features a custom-trained Reinforcement Learning agent capable of following traffic smoothly and avoiding collisions.
-
-- **Algorithm**: Twin Delayed Deep Deterministic Policy Gradient (TD3).
-- **Observation Space**: A normalized vector containing Ego Velocity, Ego Acceleration, Front Gap, Front Relative Velocity, Back Gap, Back Relative Velocity, and Desired Velocity.
-- **Action Space**: Direct acceleration prediction bounded between `min_a` and `max_a`.
-- **Custom Reward Function Design**:
-  - **Gap Tracking & Safety**: Heavily penalizes tailgating (`gap_error^2`). Includes a linear "pull-forward" penalty to actively encourage the agent to catch up if it falls more than 1.5x the desired gap behind the leader.
-  - **String Stability**: Penalizes the agent for *amplifying* the acceleration/deceleration of the car in front, ensuring shockwaves die out rather than grow. Crucially, this penalty is ignored if the agent has fallen far behind (`gap_ratio > 1.5`), allowing it to accelerate aggressively to catch back up without being penalized for "amplifying" acceleration.
-  - **Speed Matching**: Gaussian/Linear shaped rewards for matching the desired velocity.
-  - **Comfort**: Penalizes excessive jerk and extreme acceleration.
-- **Training Parameters**:
-  - `learning_rate`: 0.0003
-  - `batch_size`: 256
-  - `gamma`: 0.99
-  - `tau`: 0.005
-  - `policy_delay`: 2
-  - Action Noise: `NormalActionNoise(mean=0.0, sigma=0.1)`
-
-### 2. Energy Consumption Tracking
-
-- Real-time energy calculation based on inertial force, rolling resistance, and aerodynamic drag.
-- Displays total energy consumption in kWh for direct comparison between all models.
-
-### 3. Advanced ACC+BCC Integration Factor
-
-The ACC+BCC model dynamically blends behaviors:
-
-- **Back Gap Ratio**: Activates BCC when rear vehicle is within a critical gap.
-- **Front Gap Ratio**: Considers distance to the front vehicle relative to headway threshold.
-- Smoothed with hysteresis to prevent rapid mode switching (ACC, INTEGRATED, or BCC modes).
-
-### 4. Collision Handling System
-
-- Applies coefficient of restitution for realistic velocity exchange.
-- Visual feedback turns colliding vehicles **orange** for a few seconds.
-
-### 5. Custom Velocity Profiles
-
-- Load custom velocity-time profiles from CSV files (`data/data.csv` for lead, `data/data2.csv` for follower).
-
-### 6. Multiple Model Comparison
-
-- Runs independent simulations in parallel to visualize differences between traditional control theory and reinforcement learning.
-
-## Technical Details
-
-### Simulation Parameters
-
-- **Time Step (dt)**: Default 0.1 seconds
-- **Road Length**: 1000 meters (circular)
-- **Vehicle Length**: 4 meters
-
-### Control Gains (For ACC/BCC)
-
-- **kd**: Gap control gain (default: 0.9)
-- **kv**: Relative velocity gain (default: 0.5)
-- **kc**: Desired velocity gain (default: 0.4)
-
-### Safety Parameters
-
-- **Reaction Time**: Default 0.8 seconds
-- **Max Acceleration**: 3.0 m/s²
-- **Min Acceleration**: -5.0 m/s²
-- **Max Jerk**: ±5.0 m/s³
+A high-fidelity traffic simulation and control engineering framework comparing classical **Adaptive Cruise Control (ACC)**, **Bilateral Cruise Control (BCC)**, **Dynamic ACC+BCC Integration**, and a decentralized **Twin Delayed Deep Deterministic Policy Gradient (TD3)** neural network controller for autonomous vehicle platoons.
 
 ---
 
-For any questions or further customization, reach out to me.
+## 1. Project Directory Structure
+
+The codebase is organized into modular packages:
+
+```text
+Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/
+│
+├── simulation/             # Physics engine, circular track geometry, and vehicle kinematics
+│   ├── __init__.py
+│   ├── car.py             # Physical vehicle dynamics, rolling resistance & aerodynamic drag
+│   ├── road.py            # Circular highway boundary definitions
+│   ├── city.py            # Simulation manager for ACC, BCC, and ACC+BCC classical controllers
+│   ├── rl_city.py         # Subclass integrating direct RL acceleration actuation (zero heuristics)
+│   └── config.py          # Centralized path discovery and default simulation constants
+│
+├── env/                    # Reinforcement Learning Gym environment
+│   ├── __init__.py
+│   └── accel_traffic_env.py # Decentralized multi-agent VecEnv with 24 reward function terms
+│
+├── gui/                    # Graphical user interfaces & live visualization
+│   ├── __init__.py
+│   ├── control_window.py  # Base Tkinter control dashboard
+│   ├── rl_control_window.py # Full 4-model engineering comparison dashboard with live telemetry
+│   ├── transportation_painter.py # Multi-lane canvas renderer
+│   └── video_recorder.py  # Headless and GUI canvas video recorder
+│
+├── training/               # Policy training pipelines & callbacks
+│   ├── __init__.py
+│   └── train_td3_accel.py # TD3 training script with analytical equilibrium calibration
+│
+├── evaluation/             # Benchmarks, headless simulations, and analytics
+│   ├── __init__.py
+│   ├── evaluate_all_scenarios.py # Official 7 operational benchmark scenarios suite
+│   ├── evaluate_analytics.py     # Trajectory rollout metrics and analytics plotting
+│   ├── run_headless.py           # Multi-model 4-way headless comparison runner
+│   └── get_energy.py             # Quantitative kWh traction energy consumption analysis
+│
+├── tests/                  # Verification and diagnostic test suites
+│   ├── __init__.py
+│   ├── test_stop_and_resume.py   # 15-vehicle stop-and-resume zero-heuristic test
+│   ├── test_leader_stop_plot.py  # Emergency braking and shockwave propagation test
+│   └── test_diagnostics.py       # Rapid scenario sanity checks across speed presets
+│
+├── tools/                  # Developer utilities and telemetry loggers
+│   ├── __init__.py
+│   └── log_reward_breakdown.py   # Generates detailed 24-reward runtime logs & CSV telemetry
+│
+├── data/                   # Real-world and synthetic driving cycle profiles
+│   ├── data.csv            # Urban stop-and-go speed disturbance profile
+│   ├── data1.csv           # Highway speed drop and recovery profile
+│   └── data2.csv           # Follower disturbance cycle profile
+│
+├── docs/                   # Formal technical specifications and experiment logs
+│   ├── l_training_log.md         # Comprehensive history of all 16 training phases and metrics
+│   ├── reward_functions_log.md   # Mathematical specification of all 24 reward components
+│   └── INSTRUCTIONS.md           # Operational instructions and setup guide
+│
+├── logs/                   # Execution logs and telemetry output datasets
+│   ├── reward_breakdown_log.txt  # Human-readable step-by-step reward runtime log
+│   └── reward_telemetry.csv      # Complete 3,000+ sample CSV telemetry dataset
+│
+├── plots/                  # Generated figures, plots, and trajectory charts
+│   ├── analytics_plot.png
+│   ├── energy_consumption.png
+│   ├── leader_stop_restart_comparison.png
+│   └── simulation_results.png
+│
+├── models/                 # Saved policy checkpoints and neural network weights
+│   ├── td3_accel_agent.zip       # Active TD3 policy weights (TD3_49)
+│   ├── td3_accel_agent_vecnormalize.pkl # Running normalization statistics
+│   └── checkpoints/              # Periodic intermediate training checkpoints
+│
+├── main.py                 # Single unified CLI / GUI entrypoint
+├── requirements.txt        # Pinned Python package dependencies
+└── README.md               # Project documentation
+```
+
+---
+
+## 2. Installation & Dependencies
+
+Ensure you have Python 3.10+ installed. Install all verified dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Key dependencies:
+* `stable-baselines3>=2.3.0` & `gymnasium>=1.0.0` (Reinforcement Learning)
+* `torch>=2.0.0` (Neural Network Backend)
+* `numpy>=1.24.0` & `pandas>=2.0.0` (Kinematic calculations and telemetry data)
+* `matplotlib>=3.7.0` (Engineering dashboard plots)
+* `opencv-python>=4.8.0` (Simulation video recording)
+
+---
+
+## 3. Quick Start: Unified CLI (`main.py`)
+
+All project tasks can be executed via the unified `main.py` entrypoint from the project root:
+
+| Command | Action |
+| :--- | :--- |
+| `python main.py` or `python main.py --gui` | Launch interactive Tkinter 4-model engineering dashboard |
+| `python main.py --eval` | Run official 7 operational scenario benchmarks |
+| `python main.py --train` | Train decentralized TD3 direct acceleration policy |
+| `python main.py --headless` | Run headless multi-model comparison simulation |
+| `python main.py --energy` | Run quantitative kWh energy consumption analysis |
+| `python main.py --analytics` | Run policy rollout analytics and generate diagnostic plots |
+| `python main.py --test` | Run automated platoon stop-and-resume verification suite |
+| `python main.py --rewards` | Generate 24-component reward function audit log and CSV |
+
+---
+
+## 4. Key Architectural Features
+
+### 1. Zero-Heuristic RL Actuation
+* All follower vehicles (`indices 1..N-1`) actuate direct continuous longitudinal acceleration commands (`target_acc = float(car.rl_action)`).
+* All legacy programmatic heuristics (`launch_acc`, `catchup_acc`, `leader_stopping`) were eliminated from `simulation/rl_city.py`.
+* The policy natively masters complete queue stops, stationary auto-hold at 6.0 m queue spacing, decisive drive-off launches, and emergency collision avoidance directly from reinforcement learning.
+
+### 2. Physically-Convex 24-Component Reward Function
+The reward function in `env/accel_traffic_env.py` contains 24 distinct terms structured into 8 functional groups:
+1. **Safety Boundary**: Progressive barrier potential (`r_danger`) and emergency stopping reward (`r_safety_brake`).
+2. **Headway Tracking**: Gaussian sweet-spot reward (`r_headway`), anti-lag penalty (`r_lag`), and catch-up reward (`r_catchup`).
+3. **Speed Regulation**: Continuous blended target speed matching (`r_speed`) and linear cruise pull (`r_speed_linear`).
+4. **String Stability**: Downstream deceleration wave damping (`r_string`) and anti-panic braking penalty (`r_panic_brake`).
+5. **Standstill Precision**: Queue gap spacing (`r_standstill_gap`), stationary auto-hold brake (`r_standstill_hold`), and native launch reward (`r_launch`).
+6. **Bilateral Consensus (BCC)**: Rear tailgating protection (`r_bcc_tailgate`) and lattice midpoint speed consensus (`r_bcc_consensus`).
+7. **Passenger Comfort**: Acceleration centering (`r_accel`), jerk minimization (`r_jerk`), action rate penalty (`r_act_delta`), and zero-drift cruising lock (`r_cruise_lock`).
+8. **Traction Efficiency**: Traction power penalty (`r_energy`).
+
+### 3. Comprehensive Benchmark Verification
+The active policy (`TD3_49`) demonstrates **0 collisions** across all 7 operational benchmarks:
+* **Scenario 1 (15 m/s Cruise)**: 0 collisions, 1.322 kWh energy.
+* **Scenario 2 (25 m/s High Speed)**: 0 collisions, 2.650 kWh energy.
+* **Scenario 3 (Urban Stop-and-Go)**: 0 collisions, 0.93× shockwave attenuation, 1.951 kWh.
+* **Scenario 4 (Speed Drop & Recovery)**: 0 collisions, 8.27 m min gap.
+* **Scenario 5 (Full Stop & Standstill Hold)**: 0 collisions, 5.78 m min queue gap, 0.89× shockwave.
+* **Scenario 6 (Emergency Stop -4.5 m/s²)**: 0 collisions, 4.15 m min gap, 0.98× shockwave.
+* **Scenario 7 (Sinusoidal String Stability)**: 0 collisions, 0.95× shockwave attenuation vs ACC's 1.85×, 1.735 kWh vs ACC's 5.183 kWh (66.5% energy reduction).

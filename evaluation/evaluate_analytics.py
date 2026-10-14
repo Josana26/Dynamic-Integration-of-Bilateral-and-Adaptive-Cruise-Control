@@ -1,20 +1,32 @@
 import os
 import sys
+from pathlib import Path
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from stable_baselines3 import TD3
 
-from env.accel_traffic_env import AccelTrafficEnv
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-def evaluate():
-    env = AccelTrafficEnv()
-    model_path = "td3_accel_agent"
-    
-    if not os.path.exists(model_path + ".zip"):
-        print("Model not found!")
+from env.accel_traffic_env import AccelTrafficEnv
+from simulation.config import PLOTS_DIR, resolve_model_path, DEFAULT_SIM_PARAMS
+
+def evaluate(model_path="td3_accel_agent.zip", output_plot=None):
+    """
+    Evaluates policy model in environment rollout and generates
+    speed, acceleration, gap, and reward analytics plots.
+    """
+    resolved_model = resolve_model_path(model_path)
+    if not os.path.exists(resolved_model):
+        print(f"Model not found at {resolved_model}!")
         return
         
-    model = TD3.load(model_path)
+    env = AccelTrafficEnv()
+    model = TD3.load(resolved_model)
     
     # Run evaluation
     obs = env.reset()
@@ -27,11 +39,12 @@ def evaluate():
     }
     env.sim_params.update(gui_params)
     
-    # Re-initialize city with GUI defaults
-    init_args = [env.num_cars, env.sim_params['kd'], env.sim_params['kv'], env.sim_params['kc'],
-                 env.sim_params['v_des'], env.sim_params['max_v'], env.sim_params['min_v'],
-                 env.sim_params['min_dis'], env.sim_params['reaction_time'], 1.0,  # headway
-                 env.sim_params['max_a'], env.sim_params['min_a'], 2.0]  # min_gap
+    init_args = [
+        env.num_cars, env.sim_params['kd'], env.sim_params['kv'], env.sim_params['kc'],
+        env.sim_params['v_des'], env.sim_params['max_v'], env.sim_params['min_v'],
+        env.sim_params['min_dis'], env.sim_params['reaction_time'], 1.0,
+        env.sim_params['max_a'], env.sim_params['min_a'], 2.0
+    ]
     env.city.init(*init_args, dt=env.dt, model='ACC')
     for c in env.city.cars[1:]:
         c.is_rl = True
@@ -39,7 +52,6 @@ def evaluate():
     obs = env._get_obs()
     
     steps = 500
-    
     speeds = []
     accels = []
     gaps = []
@@ -50,12 +62,10 @@ def evaluate():
     prev_accel = np.zeros(env.num_cars)
     
     for _ in range(steps):
-        # Predict actions for follower cars using parameter sharing
         actions, _ = model.predict(obs, deterministic=True)
-        obs, rewards_step, dones, infos = env.step(actions)
+        obs, rewards_step, dones, _ = env.step(actions)
         
-        # Add sum of rewards across all cars to the step reward
-        total_step_reward = np.sum(rewards_step)
+        total_step_reward = float(np.sum(rewards_step))
         rewards.append(total_step_reward)
         
         current_speeds = []
@@ -66,16 +76,13 @@ def evaluate():
         cars = env.city.cars
         road_len = env.city.roads[0].length if env.city.roads else 1000
         
-        # Follower car metrics (indices 1..N-1)
         for i, car in enumerate(cars[1:], 1):
             current_speeds.append(car.velocity)
             current_accels.append(car.acceleration)
             
-            # compute jerk
             j = (car.acceleration - prev_accel[i]) / dt
             current_jerks.append(j)
             
-            # compute gap to front vehicle
             cars_same_road = [c for c in cars if c.current_road == car.current_road and c != car]
             def gap_to(other):
                 g = (car.pos - other.pos) % road_len
@@ -91,7 +98,6 @@ def evaluate():
         jerks.append(current_jerks)
         
         prev_accel = np.array([c.acceleration for c in cars])
-        
         if any(dones):
             break
             
@@ -100,7 +106,6 @@ def evaluate():
     gaps = np.array(gaps)
     jerks = np.array(jerks)
     
-    # Calculate Analytics
     print("=== Analytics Report ===")
     print(f"Steps survived: {len(speeds)}")
     if len(speeds) > 0:
@@ -110,7 +115,6 @@ def evaluate():
         print(f"Mean Jerk: {np.mean(np.abs(jerks)):.2f} m/s^3")
         print(f"Total Reward: {np.sum(rewards):.2f}")
     
-    # Save plots
     plt.figure(figsize=(15, 10))
     
     plt.subplot(2, 2, 1)
@@ -145,8 +149,11 @@ def evaluate():
     plt.ylabel("Reward")
     
     plt.tight_layout()
-    plt.savefig("analytics_plot.png")
-    print("Plot saved as analytics_plot.png")
+    
+    plot_target = Path(output_plot) if output_plot else PLOTS_DIR / "analytics_plot.png"
+    plt.savefig(plot_target)
+    print(f"Plot saved as {plot_target}")
 
 if __name__ == '__main__':
-    evaluate()
+    target = sys.argv[1] if len(sys.argv) > 1 else "td3_accel_agent.zip"
+    evaluate(target)
