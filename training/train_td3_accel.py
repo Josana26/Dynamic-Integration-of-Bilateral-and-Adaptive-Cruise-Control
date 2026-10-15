@@ -57,15 +57,15 @@ def train(fine_tune: str = "", timesteps: int = 150000, lr: float = 0.0003, grad
         env.training = True
         env.norm_obs = False
         env.norm_reward = True
-        env.clip_reward = 25.0
+        env.clip_reward = 35.0
     else:
-        env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=25.0)
+        env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=35.0)
 
     env = VecMonitor(env)
 
     # Action noise
     n_actions = env.action_space.shape[-1]
-    noise_sigma = 0.20 if fine_tune_resolved else 0.35
+    noise_sigma = 0.15 if fine_tune_resolved else 0.35
     action_noise = OrnsteinUhlenbeckActionNoise(
         mean=np.zeros(n_actions),
         sigma=noise_sigma * np.ones(n_actions)
@@ -83,7 +83,7 @@ def train(fine_tune: str = "", timesteps: int = 150000, lr: float = 0.0003, grad
             tensorboard_log=tb_log_dir
         )
         model.gradient_steps = gradient_steps
-        model.learning_starts = 1500
+        model.learning_starts = 2500
     else:
         print("Training fresh TD3 policy from scratch...")
         model = TD3(
