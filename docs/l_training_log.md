@@ -732,11 +732,174 @@ Following the native heuristic-free breakthrough in Phase 16 (`TD3_49`), fine-tu
 
 ---
 
-## 📁 Log File Locations & Storage Paths
+## 📌 Phase 18: Driver Intuitiveness Metric Suite & IDM Human-Reference Benchmarking
 
-1. **Main Project Workspace Training Log**:
-   * File: [docs/l_training_log.md](file:///d:/Desktop/Arya/Projects/ACC%20and%20BCC%20Python%20Code/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/docs/l_training_log.md)
-2. **TensorBoard Rollout Logs**:
-   * Directory: `tensorboard_logs/` (active runs: `./tensorboard_logs/TD3_48_1`, `./tensorboard_logs/TD3_49_1`, `./tensorboard_logs/TD3_55_1`)
-   * Inspect interactively via: `tensorboard --logdir tensorboard_logs`
+### 1. Problem Statement & Motivation
+Prior evaluations focused strictly on safety (collisions, minimum bumper distance), kinematics (mean jerk), energy consumption (kWh), and classical string stability shockwave ratios. However, an autonomous cruise controller can score well on energy and collision safety while delivering an unnatural, uncomfortable, or counter-intuitive passenger experience (e.g., phantom braking on clear open road, sluggish reaction requiring sudden late deceleration, high-frequency throttle-brake hunting, or creeping too close to the front bumper at highway speeds).
+
+Phase 18 introduces an **evaluation-only Driver Intuitiveness Index (DII, 0–100)** and a pairwise **Intelligent Driver Model (IDM) human-reference benchmark** across the official 7 operational scenarios, scoring follower cars exclusively (indices 1..N-1, excluding the leader).
+
+---
+
+### 2. Metric Suite Mathematical Formulations
+
+The Driver Intuitiveness Index (DII) is defined as:
+```text
+DII = 100 × mean(C1, C2, C3, C4, C5)
+```
+where each component C_k ∈ [0, 1] with 1.0 representing ideal intuitiveness.
+
+#### Component Breakdown:
+
+1. **C1 — Appropriateness (Deceleration Justification & Timeliness)**:
+   Penalizes both phantom braking (decelerating when the road ahead is wide open) and missed braking (failing to decelerate when closing rapidly).
+   - Relative closing velocity: `vrel = v - vf`
+   - Equilibrium desired gap: `desired_gap = min_dis + reaction_time × v`
+   - Required deceleration:
+     ```text
+     a_req = vrel² / (2 × max(gap - min_dis, 0.5))   when vrel > 0.5 m/s, else 0.0
+     ```
+   - Phantom braking step: `a < -1.0 m/s²` AND `gap > 1.2 × desired_gap` AND `vrel ≤ 0.0`
+   - Missed braking step: `a_req > 2.0 m/s²` AND `decel < 0.5 × a_req` (where `decel = max(0, -a)`)
+   - Rate calculation:
+     ```text
+     C1 = 1.0 - min(1.0, (phantom_rate + missed_rate) / 0.10)
+     ```
+
+2. **C2 — Smoothness (Harmonic Jerk & Action Sign Stability)**:
+   Rewards smooth transitions and penalizes high-frequency throttle-brake cycling.
+   - RMS Jerk: `rms_jerk = sqrt(mean((da / dt)²))` computed across all steps t ≥ 1.
+   - Sign changes per car per minute: transitions between positive acceleration and braking, ignoring the deadband `|a| ≤ 0.1 m/s²`.
+   ```text
+   C2 = 0.5 × exp(-rms_jerk / 2.0) + 0.5 × exp(-sign_changes_per_min / 30.0)
+   ```
+
+3. **C3 — Calmness (Tranquility under Steady Following & Standstill)**:
+   Measures throttle tranquility during unforced conditions.
+   - Quiet steps: `(|vrel| < 0.5 m/s AND |gap - desired_gap| < 0.2 × max(desired_gap, 1.0))` OR `(v < 0.2 m/s AND vf < 0.2 m/s)`.
+   - Calmness score:
+     ```text
+     C3 = exp(-mean(|a|) / 0.3)   over quiet steps (C3 = 1.0 if no quiet steps occur)
+     ```
+
+4. **C4 — Comfort Margin (Safety Headway & Time-to-Collision)**:
+   Evaluated over all moving steps (`v > 1.0 m/s`):
+   - Time Headway: `headway = gap / max(v, 0.1)`
+   - Time-To-Collision: `TTC = gap / vrel` when `vrel > 0.1 m/s`, else `infinity`
+   - Score: fraction of moving steps with `headway ≥ 0.8 s` AND `TTC ≥ 4.0 s` (1.0 if no moving steps).
+
+5. **C5 — Wave Behaviour (Upstream Deceleration Amplification Ratio)**:
+   Measures string stability damping:
+   - `wave_ratio = max_follower_decel / max(leader_decel, 0.1)`
+   - `C5 = min(1.0, 1.0 / wave_ratio)` (or 1.0 if `wave_ratio == 0`).
+
+---
+
+### 3. Design Thresholds
+
+All thresholds are centralized in `DII_THRESHOLDS` in `evaluation/driver_intuitiveness.py`:
+
+```python
+DII_THRESHOLDS = {
+    # C1: Appropriateness
+    'vrel_req_thresh': 0.5,        # Minimum closing speed (m/s) before required deceleration a_req is computed
+    'min_gap_headroom': 0.5,       # Buffer floor (m) in denominator max(gap - s0, 0.5) to avoid division by zero
+    'phantom_decel_thresh': -1.0,  # Deceleration threshold (a < -1.0 m/s^2) indicating noticeable braking
+    'phantom_gap_factor': 1.2,     # Gap headroom multiplier (> 1.2 * desired_gap) indicating clear road ahead
+    'phantom_vrel_thresh': 0.0,    # Relative speed condition (vrel <= 0) indicating not closing on the front car
+    'missed_areq_thresh': 2.0,     # Urgency threshold (a_req > 2.0 m/s^2) requiring active follower deceleration
+    'missed_decel_ratio': 0.5,     # Fraction of a_req (decel < 0.5 * a_req) below which braking is deemed missed
+    'rate_penalty_scale': 0.10,    # Combined rate ceiling (10%) at which C1 appropriateness drops to 0.0
+
+    # C2: Smoothness
+    'jerk_deadband': 0.1,          # Acceleration deadband (|a| <= 0.1 m/s^2) ignored during sign flip counting
+    'rms_jerk_scale': 2.0,         # Exponential decay scale for RMS jerk (m/s^3)
+    'sign_changes_scale': 30.0,    # Exponential decay scale for acceleration sign flips per car per minute
+
+    # C3: Calmness
+    'quiet_vrel_thresh': 0.5,      # Speed difference tolerance (|vrel| < 0.5 m/s) for steady following
+    'quiet_gap_ratio': 0.2,        # Fractional gap tolerance (|gap - desired_gap| < 0.2 * max(desired_gap, 1))
+    'quiet_standstill_v': 0.2,     # Standstill speed threshold (v < 0.2 and vf < 0.2 m/s)
+    'calm_accel_scale': 0.3,       # Mean absolute acceleration scale (m/s^2) over quiet steps
+
+    # C4: Comfort Margin
+    'moving_v_thresh': 1.0,        # Minimum vehicle speed (v > 1.0 m/s) defining moving steps
+    'min_headway': 0.8,            # Minimum acceptable time headway (s) under comfortable driving
+    'min_ttc': 4.0,                # Minimum acceptable Time-To-Collision (s)
+    'ttc_vrel_thresh': 0.1,        # Closing speed floor (vrel > 0.1 m/s) for finite TTC computation
+
+    # C5: Wave Behaviour
+    'min_leader_decel': 0.1,       # Floor on leader deceleration (m/s^2) to prevent singularity on steady cruise
+}
+```
+
+---
+
+### 4. Intelligent Driver Model (IDM) Reference Architecture
+
+Implemented as `IDMCity(City)` in `evaluation/driver_intuitiveness.py`:
+- IDM acceleration equation:
+  ```text
+  a = a_max × [1 - (v / v0)⁴ - (s* / s)²]
+  s* = s0 + max(0, v × T + (v × dv) / (2 × sqrt(a_max × b)))
+  ```
+- Kinematic physical boundaries: identical to classical/RL controllers (clipped to `[min_a, max_a] = [-5.0, 3.0] m/s²`, jerk bounded to `±5.0 m/s³` relative to previous step acceleration).
+- **Two Evaluated Variants**:
+  1. **Gap-Matched Reference (Primary)**: `s0 = min_dis = 6.0 m`, `T = reaction_time = 0.8 s`, `a_max = 1.5 m/s²`, `b = 2.0 m/s²`, `delta = 4.0`. Its equilibrium following distance equals the simulation's initial 18.0 m spacing.
+  2. **Default Textbook IDM (Secondary)**: `s0 = 2.0 m`, `T = 1.5 s`, `a_max = 1.5 m/s²`, `b = 2.0 m/s²`, `delta = 4.0`. At 18 m spacing with v = 15 m/s, default IDM desired gap is 24.5 m, creating an artificial initial deceleration transient.
+
+---
+
+### 5. Quantitative Benchmark Results across All 7 Scenarios
+
+#### Overall Driver Intuitiveness Index (DII) Benchmark Summary (7-Scenario Mean):
+| Controller | DII (0–100) | C1 (Approp) | C2 (Smooth) | C3 (Calm) | C4 (Comfort) | C5 (Wave) | RMS Jerk (m/s³) | Sign Flips (/min) | Wave Ratio | Min Gap |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **BCC** | **93.2** | 0.96 | 0.92 | 0.82 | 0.96 | 1.00 | 0.24 | 1.8 | 0.65× | 0.92 m |
+| **ACC+BCC** | **91.4** | 0.97 | 0.89 | 0.81 | 0.96 | 0.94 | 0.37 | 1.8 | 0.77× | 2.31 m |
+| **ACC** | **89.5** | 0.98 | 0.85 | 0.78 | 0.96 | 0.90 | 0.57 | 2.2 | 0.86× | 3.03 m |
+| **RL (TD3)** | **83.1** | 0.80 | 0.72 | 0.92 | 0.93 | 0.79 | 1.89 | 1.6 | 1.71× | 0.00 m |
+| **IDM (Gap-Ref)** | **78.3** | 0.98 | 0.89 | 0.41 | 0.97 | 0.67 | 0.43 | 0.9 | 4.86× | 4.49 m |
+| **IDM (Default)** | **71.2** | 0.92 | 0.87 | 0.22 | 0.97 | 0.59 | 0.48 | 1.5 | 8.68× | 2.00 m |
+
+#### Pairwise IDM Human-Reference Comparison Summary (vs Gap-Matched IDM Reference):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **BCC** | **0.586** | 6.59 m | **0.176** | 0.551 s | **0.361** |
+| **ACC+BCC** | 0.748 | 6.81 m | 0.267 | **0.523 s** | 0.309 |
+| **RL (TD3)** | 0.746 | 10.04 m | 0.266 | 0.813 s | 0.288 |
+| **ACC** | 0.914 | 6.96 m | 0.359 | 0.530 s | 0.274 |
+
+#### Pairwise IDM Human-Reference Comparison Summary (vs Default Textbook IDM: s0=2.0m, T=1.5s):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **BCC** | **0.691** | 9.65 m | **0.255** | 0.781 s | **0.291** |
+| **ACC+BCC** | 0.828 | 9.84 m | 0.353 | **0.752 s** | 0.249 |
+| **ACC** | 0.969 | 9.90 m | 0.447 | 0.758 s | 0.222 |
+| **RL (TD3)** | 0.889 | 12.86 m | 0.351 | 1.073 s | 0.214 |
+
+---
+
+### 6. Limitations & Methodological Constraints
+
+1. **Deterministic Single-Run Evaluation**:
+   The simulation is fully deterministic with one fixed run per benchmark scenario. Consequently, there are no statistical confidence bounds or error bars. Small differences of 1–3 DII points should not be over-interpreted as decisive behavioral superiority.
+2. **Defined Engineering Proxy vs Validated Clinical Measure**:
+   The Driver Intuitiveness Index (DII) is an engineered behavioral proxy, not an empirically validated psychophysical measure of human passenger perception. All thresholds (`phantom_decel_thresh`, `rms_jerk_scale`, `min_ttc`, etc.) are design choices reflecting reasonable automotive engineering expectations.
+3. **IDM As Idealized Model**:
+   The Intelligent Driver Model represents an idealized continuous-time mathematical car-following model devoid of perception latency, reaction delay, attention lapses, or sensor noise. Being statistically close to IDM denotes "human-like" kinematic following profile, not necessarily "better" or "globally optimal". IDM is an anchor reference row, not an optimization target.
+4. **Reward Gaming Prohibition**:
+   Do NOT incorporate these DII components directly into the training reward function without a separate held-out evaluation set. Direct optimization against these proxies creates severe risk of RL reward gaming (e.g., policy artificial freezing to maximize C3 Calmness or refusal to brake to minimize C2 sign flips).
+
+---
+
+## 📁 Artifact Storage & Output File References
+
+1. **Intuitiveness Evaluation Module**: [evaluation/driver_intuitiveness.py](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/evaluation/driver_intuitiveness.py)
+2. **Automated Verification Test Suite**: [tests/test_driver_intuitiveness.py](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/tests/test_driver_intuitiveness.py)
+3. **DII Telemetry Data JSON**: [logs/driver_intuitiveness.json](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/logs/driver_intuitiveness.json)
+4. **IDM Comparison Data JSON**: [logs/idm_comparison.json](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/logs/idm_comparison.json)
+5. **DII Comparison Visual Plot**: [plots/dii_comparison.png](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/plots/dii_comparison.png)
+6. **IDM Accel RMSE Visual Plot**: [plots/idm_comparison.png](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/plots/idm_comparison.png)
+
 
