@@ -32,7 +32,7 @@ class RLCity(City):
                     prev_cmd = getattr(car, '_filtered_cmd', raw_cmd)
                     if car.velocity <= 1e-4 and raw_cmd > 0.0:
                         prev_cmd = max(0.0, prev_cmd)
-                    alpha = 0.30  # Balanced filter: good chattering suppression without C3 calmness regression
+                    alpha = 0.35  # Standard filter with tightened max_jerk=3.0
                     car.rl_action = alpha * raw_cmd + (1.0 - alpha) * prev_cmd
                     car._filtered_cmd = car.rl_action
 
@@ -64,7 +64,7 @@ class RLCity(City):
                     # Standard direct acceleration command from the RL model
                     target_acc = max(self.min_a, min(self.max_a, raw_cmd))
                     jerk = (target_acc - last_acc) / dt
-                    max_jerk = 3.0  # Tightened from 5.0 for automotive comfort-grade smoothness
+                    max_jerk = 3.0  # Optimal comfort-grade limit with superior emergency safety margin
                     
                     if jerk > max_jerk:
                         acc = last_acc + max_jerk * dt

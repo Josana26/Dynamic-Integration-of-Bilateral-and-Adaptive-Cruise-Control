@@ -237,7 +237,7 @@ class TestDriverIntuitiveness(unittest.TestCase):
         results = run_driver_intuitiveness_suite(
             model_path=model_path,
             scenarios=short_scenario,
-            save_outputs=True,
+            save_outputs=False,
         )
 
         self.assertIn('overall_dii', results)

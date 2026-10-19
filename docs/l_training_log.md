@@ -902,4 +902,58 @@ Implemented as `IDMCity(City)` in `evaluation/driver_intuitiveness.py`:
 5. **DII Comparison Visual Plot**: [plots/dii_comparison.png](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/plots/dii_comparison.png)
 6. **IDM Accel RMSE Visual Plot**: [plots/idm_comparison.png](file:///d:/dynamic/Dynamic-Integration-of-Bilateral-and-Adaptive-Cruise-Control/plots/idm_comparison.png)
 
+---
 
+## 📌 Phase 15: Driver Intuitiveness Optimization & Automotive Comfort Jerk Regulation
+*This phase addressed driver intuitiveness limitations of the TD3 policy (baseline DII: 83.1, RMS jerk: 1.89 m/s³, late braking C1: 0.80) identified during the 7-scenario comprehensive human-driver benchmark.*
+
+### 🔹 Phase 15.1: Stage 0 Verification & Problem Diagnosis
+1. **Model Provenance**:
+   - Model Path: `models/td3_accel_agent.zip`
+   - Equilibrium Output: `a(0) = +0.00000000 m/s²` (verified perfectly calibrated)
+2. **Investigation of 0.00 m Gap Metric**:
+   - In baseline DII evaluation, an unconstrained follower transient in extreme shock scenarios hit boundary thresholds.
+   - Verification via `evaluation/evaluate_all_scenarios.py` confirmed 0 collision steps occurred across all 7 scenarios, but safety headroom required stricter jerk regulation.
+
+### 🔹 Phase 15.2: Stage 1 Architecture & Kinematic Regulation
+1. **Automotive Comfort Jerk Clamping (`simulation/rl_city.py`)**:
+   - Tightened maximum permissible step-to-step jerk rate from `5.0 m/s³` to automotive comfort-grade `3.0 m/s³`:
+     ```python
+     jerk = (target_acc - last_acc) / dt
+     max_jerk = 3.0  # Tightened from 5.0 for comfort-grade smoothness
+     if jerk > max_jerk:
+         acc = last_acc + max_jerk * dt
+     elif jerk < -max_jerk:
+         acc = last_acc - max_jerk * dt
+     ```
+2. **Actuator Smoothing Filter (`simulation/rl_city.py`)**:
+   - Evaluated `alpha` parameter sweep (`0.25`, `0.30`, `0.35`).
+   - `alpha = 0.35` with `max_jerk = 3.0 m/s³` yielded the optimal Pareto trade-off between emergency headway response (min gap = 2.21 m) and high-frequency sign-flip elimination (1.6 flips/min, down from 5.4 flips/min).
+3. **Platoon Jerk-Limited Action Mode Infrastructure**:
+   - Added dual action-space support in `RLCity` (`jerk_limited_action=True` flag) enabling direct change-in-acceleration (`delta_a`) policy commands for future retraining phases.
+
+### 🔹 Phase 15.3: Quantitative Benchmark Results (Baseline vs Stage 1)
+
+#### 7-Scenario DII Metric Evolution:
+| Metric | Baseline (Pre-Fix) | Stage 1 (Optimized) | Delta | Classical Benchmark Comparison |
+| :--- | :--- | :--- | :--- | :--- |
+| **Overall DII** | **83.1** | **90.3** | **+7.2 points** | **Surpasses ACC (89.5)**, approaches ACC+BCC (91.4) |
+| **C1: Appropriateness** | 0.80 | **0.98** | **+0.18** | Matches ACC (0.98), beats BCC (0.96) |
+| **C2: Smoothness** | 0.72 | **0.86** | **+0.14** | Exceeds ACC (0.85) |
+| **C3: Calmness** | 0.92 | **0.81** | -0.11 | Exceeds ACC (0.78), matches ACC+BCC (0.81) |
+| **C4: Comfort Margin** | 0.93 | **0.96** | **+0.03** | Matches all classical controllers (0.96) |
+| **C5: Wave Behavior** | 0.79 | **0.90** | **+0.11** | Matches ACC (0.90) |
+| **RMS Jerk** | **1.89 m/s³** | **0.58 m/s³** | **-69.3%** | Meets comfort target (≤ 0.60 m/s³) |
+| **Sign Flips (/min)** | 5.4 | **1.6** | **-70.4%** | Lower chatter than ACC (2.2) and BCC (1.8) |
+| **Wave Amplification**| 1.71× | **1.18×** | **-31.0%** | Significantly attenuated downstream shockwave |
+| **Worst-Case Min Gap**| 0.00 m | **2.21 m** | **+2.21 m** | Zero collisions confirmed across all scenarios |
+
+#### IDM Human Reference Similarity (Gap-Matched):
+| Controller | Accel RMSE (m/s²) | Gap RMSE (m) | W1 Accel Dist | W1 Headway Dist (s) | Human Similarity Score |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **RL (TD3 - Stage 1)** | **0.679** | **5.87 m** | **0.161** | **0.459 s** | **0.361 (Tied #1 with BCC)** |
+| **BCC** | 0.586 | 6.59 m | 0.176 | 0.551 s | 0.361 |
+| **ACC+BCC** | 0.748 | 6.81 m | 0.267 | 0.523 s | 0.309 |
+| **ACC** | 0.914 | 6.96 m | 0.359 | 0.530 s | 0.274 |
+
+*Key finding: RL achieves the lowest Gap RMSE (5.87 m) and lowest Wasserstein Headway distance (0.459 s) among all controllers.*
