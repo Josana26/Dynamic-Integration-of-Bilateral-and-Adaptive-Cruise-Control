@@ -67,14 +67,22 @@ def run_test_suite(model_path="td3_accel_agent.zip"):
     from tests.test_stop_and_resume import test_stop_and_resume
     from tests.test_diagnostics import run_diagnostics
 
-    print("\n[Test 1/3] Driver Intuitiveness & IDM Reference Verification...")
+    print("\n[Test 1/4] Driver Intuitiveness & IDM Reference Verification...")
     run_intuitiveness_tests(model_path=model_path)
 
-    print("\n[Test 2/3] 15-Car Stop and Resume Verification...")
+    print("\n[Test 2/4] 15-Car Stop and Resume Verification...")
     test_stop_and_resume(model_path=model_path)
 
-    print("\n[Test 3/3] Diagnostic Scenario Rollouts...")
+    print("\n[Test 3/4] Diagnostic Scenario Rollouts...")
     run_diagnostics(model_path=model_path)
+
+    print("\n[Test 4/4] GUI Step Loop (60s Headless) & Metric Label Audit...")
+    import unittest
+    suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_gui_intuitiveness')
+    runner = unittest.TextTestRunner(verbosity=1)
+    res = runner.run(suite)
+    if not res.wasSuccessful():
+        raise RuntimeError("GUI Intuitiveness verification tests failed!")
     print("\n>>> All verification tests passed successfully!")
 
 def run_reward_logger(model_path="td3_accel_agent.zip"):
