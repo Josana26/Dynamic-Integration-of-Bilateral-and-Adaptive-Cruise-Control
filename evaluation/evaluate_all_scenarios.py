@@ -86,6 +86,14 @@ def get_scenarios():
             "v_des": 15.0,
             "type": "wave",
             "dur": 60.0
+        },
+        {
+            "id": "rear_vehicle_brake",
+            "name": "8. Rear Vehicle Braking & Disturbance (Human Decoupling)",
+            "v_des": 15.0,
+            "type": "none",
+            "dur": 40.0,
+            "follower_profile": [(0.0, 15.0), (12.0, 15.0), (15.0, 5.0), (28.0, 5.0), (33.0, 15.0), (40.0, 15.0)]
         }
     ]
     return scenarios

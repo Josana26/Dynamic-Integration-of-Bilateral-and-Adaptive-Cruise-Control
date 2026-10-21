@@ -629,7 +629,7 @@ class RLControlWindow(ControlWindow):
         ).pack(anchor="w", pady=(0, 8))
 
         columns = (
-            "controller", "dii", "c1", "c2", "c3", "c4", "c5",
+            "controller", "dii", "c1", "c2", "c3", "c4", "r_decoup",
             "rms_jerk", "flips", "wave", "min_gap", "collisions"
         )
         self.intuitiveness_tree = ttk.Treeview(
@@ -647,7 +647,7 @@ class RLControlWindow(ControlWindow):
             ("c2", "C2 Smooth", 75, "center"),
             ("c3", "C3 Calm", 75, "center"),
             ("c4", "C4 Comfort", 75, "center"),
-            ("c5", "C5 Wave", 75, "center"),
+            ("r_decoup", "R-Decoup", 80, "center"),
             ("rms_jerk", "RMS Jerk", 95, "center"),
             ("flips", "Flips/min", 75, "center"),
             ("wave", "Wave Ratio", 85, "center"),
@@ -835,7 +835,7 @@ class RLControlWindow(ControlWindow):
                     c2 = f"{row_data.get('C2', 0.0):.2f}"
                     c3 = f"{row_data.get('C3', 0.0):.2f}"
                     c4 = f"{row_data.get('C4', 0.0):.2f}"
-                    c5 = f"{row_data.get('C5', 0.0):.2f}"
+                    r_dec = f"{row_data.get('rear_decoupling', raw.get('rear_decoupling', 1.0)):.2f}"
                     rms_j = f"{raw.get('rms_jerk', 0.0):.2f} m/s³"
                     flips = f"{raw.get('sign_changes_per_min', 0.0):.1f}"
                     wave = f"{raw.get('wave_ratio', 0.0):.2f}x"
@@ -845,7 +845,7 @@ class RLControlWindow(ControlWindow):
                     tag = "rl_row" if key == "RL" else "ref_row" if "IDM" in key else "norm_row"
                     self.intuitiveness_tree.insert(
                         "", "end",
-                        values=(disp_name, dii, c1, c2, c3, c4, c5, rms_j, flips, wave, mg, cols),
+                        values=(disp_name, dii, c1, c2, c3, c4, r_dec, rms_j, flips, wave, mg, cols),
                         tags=(tag,)
                     )
 

@@ -184,59 +184,40 @@ class City:
                     car.acceleration = acc
                     continue
                 continue
-            # if idx == 2:
-            #     if getattr(self, 'follower_stop', False):
-            #         acc = self.kc * (0 - car.velocity)
-            #         acc = max(self.min_a, min(self.max_a, acc))
-            #         last_acc = car.acceleration
-            #         jerk  = (acc - last_acc) / dt
-            #         max_jerk = 5
-            #         if jerk > max_jerk:
-            #             acc = last_acc + max_jerk * dt
-            #         elif jerk < -max_jerk:
-            #             acc = last_acc - max_jerk * dt
-            #         # car.acceleration = acc
-            #         car.acceleration = acc
-            #         car.mode = "VEL"
-            #         continue
-                
-            #     if hasattr(self, 'follower_velocity_profile') and self.follower_velocity_profile:
-            #         time = round(self.step_count * dt, 3)
-            #         for i in range(len(self.follower_velocity_profile)-1):
-            #             t1,v1 = self.follower_velocity_profile[i]
-            #             t2, v2 = self.follower_velocity_profile[i+1]
-            #             if t1 <= time <= t2:
-            #                 alpha = (time - t1) / (t2 - t1)
-            #                 target_velocity = v1 + alpha * (v2 - v1)
-            #                 # current_velocity = car.velocity
-            #                 acc = self.kc * (target_velocity - car.velocity)
-            #                 # acc = (target_velocity - current_velocity) / dt
-            #                 acc = max(self.min_a, min(self.max_a, acc))
-            #                 last_acc = car.acceleration
-            #                 jerk  = (acc - last_acc) / dt
-            #                 max_jerk = 5
-            #                 if jerk > max_jerk:
-            #                     acc = last_acc + max_jerk * dt
-            #                 elif jerk < -max_jerk:
-            #                     acc = last_acc - max_jerk * dt
-            #                 car.acceleration = acc
-            #                 break
-            #         else:
-            #             # If time exceeds profile, maintain last velocity
-            #             t1, v1 = self.follower_velocity_profile[-1]
-            #             target_velocity = v1
-            #             acc = self.kc * (target_velocity - car.velocity)
-            #             # acc = (target_velocity - current_velocity) / dt
-            #             acc = max(self.min_a, min(self.max_a, acc))
-            #             last_acc = car.acceleration
-            #             jerk  = (acc - last_acc) / dt
-            #             max_jerk = 5
-            #             if jerk > max_jerk:
-            #                 acc = last_acc + max_jerk * dt
-            #             elif jerk < -max_jerk:
-            #                 acc = last_acc - max_jerk * dt
-            #             car.acceleration = acc
-            #         continue
+            if idx == len(self.cars) - 1:
+                if hasattr(self, 'follower_velocity_profile') and self.follower_velocity_profile:
+                    time = round(self.step_count * dt, 3)
+                    for i in range(len(self.follower_velocity_profile) - 1):
+                        t1, v1 = self.follower_velocity_profile[i]
+                        t2, v2 = self.follower_velocity_profile[i + 1]
+                        if t1 <= time <= t2:
+                            alpha = (time - t1) / (t2 - t1)
+                            target_velocity = v1 + alpha * (v2 - v1)
+                            acc = self.kc * (target_velocity - car.velocity)
+                            acc = max(self.min_a, min(self.max_a, acc))
+                            last_acc = car.acceleration
+                            jerk = (acc - last_acc) / dt
+                            max_jerk = 5.0
+                            if jerk > max_jerk:
+                                acc = last_acc + max_jerk * dt
+                            elif jerk < -max_jerk:
+                                acc = last_acc - max_jerk * dt
+                            car.acceleration = acc
+                            break
+                    else:
+                        t1, v1 = self.follower_velocity_profile[-1]
+                        target_velocity = v1
+                        acc = self.kc * (target_velocity - car.velocity)
+                        acc = max(self.min_a, min(self.max_a, acc))
+                        last_acc = car.acceleration
+                        jerk = (acc - last_acc) / dt
+                        max_jerk = 5.0
+                        if jerk > max_jerk:
+                            acc = last_acc + max_jerk * dt
+                        elif jerk < -max_jerk:
+                            acc = last_acc - max_jerk * dt
+                        car.acceleration = acc
+                    continue
 
     
             # Find the car ahead and behind on the same road (circular road)

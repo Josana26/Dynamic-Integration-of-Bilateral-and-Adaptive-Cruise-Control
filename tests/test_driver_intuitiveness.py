@@ -221,6 +221,45 @@ class TestDriverIntuitiveness(unittest.TestCase):
             prev_a = cur_a
             city.move_forward(dt)
 
+    def test_rear_vehicle_brake_phantom_deceleration(self):
+        """
+        Verify that when the rear vehicle drops/brakes on a clear road:
+        - ACC ignores the rear vehicle and exhibits 0 phantom braking.
+        - BCC reacts to the rear vehicle, causing unwanted phantom braking.
+        """
+        params = dict(DEFAULT_SIM_PARAMS)
+        params['car_number'] = 3
+        params['v_des'] = 15.0
+        dt = 0.1
+        init_args = [params[k] for k in ['car_number', 'kd', 'kv', 'kc', 'v_des', 'max_v', 'min_v', 'min_dis', 'reaction_time', 'headway_time', 'max_a', 'min_a', 'min_gap']]
+
+        # 1. ACC simulation
+        city_acc = City()
+        city_acc.init(*init_args, dt=dt, model='ACC')
+        city_acc.follower_velocity_profile = [(0.0, 15.0), (2.0, 15.0), (4.0, 5.0), (10.0, 5.0)]
+
+        acc_decel_steps = 0
+        for _ in range(100):
+            city_acc.run(dt)
+            if city_acc.cars[1].acceleration < -0.5:
+                acc_decel_steps += 1
+
+        # 2. BCC simulation
+        city_bcc = City()
+        city_bcc.init(*init_args, dt=dt, model='BCC')
+        city_bcc.follower_velocity_profile = [(0.0, 15.0), (2.0, 15.0), (4.0, 5.0), (10.0, 5.0)]
+
+        bcc_decel_steps = 0
+        for _ in range(100):
+            city_bcc.run(dt)
+            if city_bcc.cars[1].acceleration < -0.5:
+                bcc_decel_steps += 1
+
+        self.assertEqual(acc_decel_steps, 0,
+                         msg="ACC must completely ignore rear car braking (zero phantom braking)")
+        self.assertGreater(bcc_decel_steps, 0,
+                           msg="BCC must exhibit rear-induced phantom braking when rear car drops")
+
     def test_smoke_pipeline(self):
         """Smoke test: the full pipeline runs on a shortened scenario and produces all output files."""
         short_scenario = [{
